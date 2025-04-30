@@ -1,70 +1,81 @@
 # DJ Queue Bot
 
-A Turntable.fm bot that manages a DJ queue system, providing fair and organized access to the DJ booth.
+A live DJ queue management system for chat-based music platforms.
+
+## Overview
+
+This bot provides a fair and organized way to manage DJ turns in a virtual room. It implements a queue system that allows users to join a line to become a DJ, ensures that only authorized DJs are on stage, and provides administrative controls for queue management.
 
 ## Features
 
-- **Live DJ Queue Management**: Organizes users who want to DJ
-- **Admin Controls**: Special commands for room administrators
-- **Redis Integration**: Publishes queue data to Redis for external applications
-- **Thread Safety**: Ensures reliable operation using mutex locking
+- **DJ Queue Management**: Users can join and leave a queue to take turns being a DJ
+- **Admin Controls**: Privileged users can enable/disable the queue, lock it, and manage queue members
+- **Real-time Updates**: Queue status is published to Redis for integration with other systems
+- **Auto-moderation**: Automatically removes DJs who aren't in the queue
+- **Race-condition Protection**: Uses mutex locks to prevent queue corruption in concurrent operations
 
 ## Commands
 
 ### User Commands
 
-| Command | Description |
-|---------|-------------|
-| `/q` | View the current DJ queue |
-| `/a` | Add yourself to the DJ queue |
-| `/r` | Remove yourself from the DJ queue |
+- `/q` - View the current DJ queue
+- `/a` - Add yourself to the DJ queue
+- `/r` - Remove yourself from the DJ queue
+- `/queuestatus` - Display the full status of the queue system
 
 ### Admin Commands
 
-| Command | Description |
-|---------|-------------|
-| `/enablequeue` | Enable the DJ queue system |
-| `/disablequeue` | Disable the DJ queue system |
-| `/lockqueue` | Toggle queue lock (when locked, only admins can modify the queue) |
-| `/@a username` | Add a specific user to the DJ queue |
-| `/@r username` | Remove a specific user from the DJ queue |
+- `/enablequeue` - Turn on the queue system
+- `/disablequeue` - Turn off the queue system
+- `/lockqueue` - Toggle the queue lock (prevents non-admins from modifying the queue)
+- `/@a username` - Add a specific user to the queue
+- `/@r username` - Remove a specific user from the queue
 
-## System Behavior
+## Technical Implementation
 
-### Queue States
+This bot is built using:
+- **ttapi**: The core bot framework for interacting with the platform
+- **ioredis**: Redis client for publishing queue updates
+- **async-mutex**: Mutex implementation for preventing race conditions
 
-- **Disabled**: Anyone can DJ (default state)
-- **Enabled**: Only users in the queue can DJ
-- **Locked**: Queue remains visible to all, but only admins can modify it
+The system is designed to handle concurrent operations safely while maintaining a consistent queue state.
 
-### Automatic Enforcement
+## Environment Variables
 
-- Users not in the queue who try to DJ are automatically removed
-- After each song, the system checks if the current DJ is in the queue
-- DJs removed from the queue are automatically removed from the booth
+The following environment variables need to be set:
 
-### Redis Publishing
+- `DEEPCUT_BOT_AUTH` - Authentication token for the bot
+- `DEEPCUT_BOT_USERID` - User ID for the bot
+- `DEEPCUT_BOT_ROOMID` - Room ID where the bot will operate
+- `UPSTASH_REDIS_AUTH` - Redis connection string
+- `ADMIN_USERNAME_1` - First admin username
+- `ADMIN_USERNAME_2` - Second admin username
 
-- Queue state published every 10 seconds
-- Contains DJ list and lock status
-- Uses channel-1 for distribution
+## Queue Operation
 
-## Configuration
+When the queue is enabled:
+1. Users must type `/a` to join the queue before they can become a DJ
+2. Users who attempt to DJ without being in the queue are automatically removed
+3. After a DJ finishes playing, they remain in the queue unless they use `/r` to remove themselves
+4. Queue status is published to Redis every 10 seconds for integration with other systems
 
-Set these environment variables:
+## Security and Permissions
 
-```
-DEEPCUT_BOT_AUTH=<bot-auth-token>
-DEEPCUT_BOT_USERID=<bot-user-id>
-DEEPCUT_BOT_ROOMID=<room-id>
-UPSTASH_REDIS_AUTH=<redis-connection-string>
-ADMIN_USERNAME_1=<first-admin-username>
-ADMIN_USERNAME_2=<second-admin-username>
-```
+- Only designated admins can enable/disable the queue system
+- When the queue is locked, only admins can add or remove users
+- All queue operations are protected by mutex locks to prevent race conditions
 
-## Dependencies
+## Example Usage
 
-- ttapi: Turntable.fm API client
-- ioredis: Redis client
-- async-mutex: Thread safety utilities
-- Custom queue implementation
+1. Admin enables the queue: `/enablequeue`
+2. Users join the queue: `/a`
+3. Users can check who's waiting: `/q`
+4. Users can leave the queue: `/r`
+5. Admin can lock the queue during special events: `/lockqueue`
+6. Anyone can check the system status: `/queuestatus`
+
+## Notes
+
+- The queue system is disabled by default on startup
+- The bot will only monitor and enforce the queue when the system is enabled
+- Redis publication can be used to display the queue status on external displays or websites

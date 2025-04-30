@@ -13,8 +13,8 @@ const client = new Client({
 
 // Connect to Redis
 const redis = new Redis(process.env.UPSTASH_REDIS_AUTH);
-let queueMessage = "";
-let songMessage = "";
+let queueMessage = "No queue information available yet."; // Default message
+let songMessage = "No song information available yet."; // Default message
 
 // Subscribe to Redis channels
 redis.subscribe("channel-1", "channel-2", (err, count) => {
@@ -28,10 +28,11 @@ redis.subscribe("channel-1", "channel-2", (err, count) => {
 // Handle incoming Redis messages
 redis.on("message", (channel, message) => {
   console.log(`Received ${message} from ${channel}`);
-  if (channel.includes("channel-1")) {
+  // Only update messages if they're not empty
+  if (channel.includes("channel-1") && message.trim() !== "") {
     queueMessage = message;
   }
-  if (channel.includes("channel-2")) {
+  if (channel.includes("channel-2") && message.trim() !== "") {
     songMessage = message;
   }
 });
@@ -48,13 +49,12 @@ client.on("messageCreate", async (message) => {
 
   // Respond to !queue command with data from Redis
   if (message.content === "!queue") {
-    message.reply(queueMessage);
+    message.reply(queueMessage || "No queue information available.");
   }
 
-  // TODO: Fix to show the recent last song
-  // if (message.content === "!song") {
-  //   message.reply(songMessage);
-  // }
+  if (message.content === "!song") {
+    message.reply(songMessage || "No song information available.");
+  }
 });
 
 // Login to Discord

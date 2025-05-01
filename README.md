@@ -1,81 +1,105 @@
-# DJ Queue Bot
+# DeepCut DJ Queue Bot
 
-A live DJ queue management system for chat-based music platforms.
-
-## Overview
-
-This bot provides a fair and organized way to manage DJ turns in a virtual room. It implements a queue system that allows users to join a line to become a DJ, ensures that only authorized DJs are on stage, and provides administrative controls for queue management.
+A Node.js bot for managing DJ queues in TurntableAPI-compatible music rooms. This bot maintains an organized queue system for live DJs, enforces queue order, and provides real-time queue updates through Redis.
 
 ## Features
 
-- **DJ Queue Management**: Users can join and leave a queue to take turns being a DJ
-- **Admin Controls**: Privileged users can enable/disable the queue, lock it, and manage queue members
-- **Real-time Updates**: Queue status is published to Redis for integration with other systems
-- **Auto-moderation**: Automatically removes DJs who aren't in the queue
-- **Race-condition Protection**: Uses mutex locks to prevent queue corruption in concurrent operations
+- **DJ Queue Management**: Maintains an ordered list of users waiting to DJ
+- **Admin Controls**: Special commands for moderators to manage the queue
+- **Redis Integration**: Real-time queue publication to external services
+- **Song Tracking**: Publishes current song information to Redis
+- **Queue Enforcement**: Automatically removes DJs who aren't in the queue
 
-## Commands
+## Setup
+
+### Prerequisites
+
+- Node.js
+- npm or yarn
+- Redis instance (Upstash recommended)
+- TurntableAPI bot account
+
+### Environment Variables
+
+Set up the following environment variables:
+
+```
+DEEPCUT_BOT_AUTH=your_bot_auth_token
+DEEPCUT_BOT_USERID=your_bot_user_id
+DEEPCUT_BOT_ROOMID=your_room_id
+UPSTASH_REDIS_AUTH=your_redis_connection_string
+ADMIN_USERNAME_1=admin_username1
+ADMIN_USERNAME_2=admin_username2
+```
+
+### Installation
+
+1. Clone the repository
+2. Install dependencies: `npm install`
+3. Run the bot: `node deepcutBot.js`
+
+## Usage
 
 ### User Commands
 
-- `/q` - View the current DJ queue
-- `/a` - Add yourself to the DJ queue
-- `/r` - Remove yourself from the DJ queue
-- `/queuestatus` - Display the full status of the queue system
+| Command | Description |
+|---------|-------------|
+| `/q` | View the current DJ queue |
+| `/a` | Add yourself to the DJ queue |
+| `/r` | Remove yourself from the DJ queue |
+| `/queuestatus` | View full queue system status |
 
 ### Admin Commands
 
-- `/enablequeue` - Turn on the queue system
-- `/disablequeue` - Turn off the queue system
-- `/lockqueue` - Toggle the queue lock (prevents non-admins from modifying the queue)
-- `/@a username` - Add a specific user to the queue
-- `/@r username` - Remove a specific user from the queue
+| Command | Description |
+|---------|-------------|
+| `/enablequeue` | Enable the DJ queue system |
+| `/disablequeue` | Disable the DJ queue system |
+| `/lockqueue` | Toggle lock state of the queue |
+| `/clearqueue` | Clear all users from the queue |
+| `/@a username` | Add a specific user to the queue |
+| `/@r username` | Remove a specific user from the queue |
 
-## Technical Implementation
+## Redis Channels
 
-This bot is built using:
-- **ttapi**: The core bot framework for interacting with the platform
-- **ioredis**: Redis client for publishing queue updates
-- **async-mutex**: Mutex implementation for preventing race conditions
+The bot publishes to two Redis channels:
 
-The system is designed to handle concurrent operations safely while maintaining a consistent queue state.
+- **channel-1**: Queue state information (updated every 10 seconds when enabled)
+  ```json
+  {
+    "DJs": "user1, user2, user3",
+    "locked": false
+  }
+  ```
 
-## Environment Variables
+- **channel-2**: Current song information (published on each new song)
+  ```json
+  {
+    "songName": "Example Song",
+    "artist": "Example Artist",
+    "djName": "DJ Username",
+    "startTime": 1619123456789,
+    "roomName": "Room Name"
+  }
+  ```
 
-The following environment variables need to be set:
+## Queue Behavior
 
-- `DEEPCUT_BOT_AUTH` - Authentication token for the bot
-- `DEEPCUT_BOT_USERID` - User ID for the bot
-- `DEEPCUT_BOT_ROOMID` - Room ID where the bot will operate
-- `UPSTASH_REDIS_AUTH` - Redis connection string
-- `ADMIN_USERNAME_1` - First admin username
-- `ADMIN_USERNAME_2` - Second admin username
+- When the queue is enabled, users must be in the queue to DJ
+- Users attempting to DJ without being in the queue will be removed
+- The bot sends a private message explaining how to join the queue
+- When the queue is locked, only admins can modify it
+- After each song, the bot verifies the current DJ is in the queue
 
-## Queue Operation
+## Troubleshooting
 
-When the queue is enabled:
-1. Users must type `/a` to join the queue before they can become a DJ
-2. Users who attempt to DJ without being in the queue are automatically removed
-3. After a DJ finishes playing, they remain in the queue unless they use `/r` to remove themselves
-4. Queue status is published to Redis every 10 seconds for integration with other systems
+- If commands aren't registering, ensure they're typed exactly as shown
+- Commands can be typed at the end of a message (e.g., "Hello everyone /q")
+- Redis connection issues will appear in the console logs
+- Mutex locks prevent race conditions when multiple commands run simultaneously
 
-## Security and Permissions
+## Dependencies
 
-- Only designated admins can enable/disable the queue system
-- When the queue is locked, only admins can add or remove users
-- All queue operations are protected by mutex locks to prevent race conditions
-
-## Example Usage
-
-1. Admin enables the queue: `/enablequeue`
-2. Users join the queue: `/a`
-3. Users can check who's waiting: `/q`
-4. Users can leave the queue: `/r`
-5. Admin can lock the queue during special events: `/lockqueue`
-6. Anyone can check the system status: `/queuestatus`
-
-## Notes
-
-- The queue system is disabled by default on startup
-- The bot will only monitor and enforce the queue when the system is enabled
-- Redis publication can be used to display the queue status on external displays or websites
+- ttapi: TurntableAPI client library
+- ioredis: Redis client
+- async-mutex: Mutex for state management

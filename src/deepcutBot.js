@@ -206,6 +206,23 @@ function handleAdminCommand(command, username, targetUsername = null) {
           }
           break;
           
+        case "clearqueue":
+          if (isAdmin(username)) {
+            // Only clear if queue is not empty
+            if (!djQueue.isEmpty()) {
+              djQueue.clear();
+              speakPromise = speakAsync(`@${username} has cleared the live DJ queue.`)
+                .then(() => {
+                  updateQueuePublication();
+                });
+            } else {
+              speakPromise = speakAsync("The live DJ queue is already empty.");
+            }
+          } else {
+            speakPromise = speakAsync(`@${username} you don't have permission to clear the live DJ queue.`);
+          }
+          break;
+          
         default:
           speakPromise = Promise.resolve();
       }
@@ -342,6 +359,13 @@ bot.on("speak", function (data) {
     console.log("Processing lockqueue command");
     handleAdminCommand("lockqueue", username)
       .catch(err => console.error("Error handling lockqueue:", err));
+    return;
+  }
+  
+  if (text === "/clearqueue" || text.endsWith(" /clearqueue")) {
+    console.log("Processing clearqueue command");
+    handleAdminCommand("clearqueue", username)
+      .catch(err => console.error("Error handling clearqueue:", err));
     return;
   }
   

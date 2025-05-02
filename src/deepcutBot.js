@@ -103,9 +103,100 @@ function stopQueuePublication() {
   });
 }
 
-
 // Clear all existing event listeners to start fresh
 bot.removeAllListeners();
+
+// Handle getting current DJs and adding them to the queue
+function handleGetCurrentDjBooth(username) {
+  console.log(`Admin ${username} executed /getcurrentdjbooth command`);
+  
+  // Only allow admins to perform this action
+  if (!isAdmin(username)) {
+    bot.speak(`@${username} you don't have permission to get current DJs and add them to the queue.`);
+    return Promise.resolve(); // Return immediately
+  }
+  
+  // First clear the queue to ensure we're starting fresh
+  // This is a simpler approach than trying to sync existing entries
+  djQueue.clear();
+  console.log("Queue cleared before updating with current DJs");
+  
+  // Use roomInfo to get current DJs in the booth
+  bot.roomInfo(false, function (data) {
+    try {
+      console.log("Retrieved room info for /getcurrentqueue");
+      
+      // Check if data and required properties exist
+      if (!data || !data.room || !data.room.metadata || !data.room.metadata.djs) {
+        bot.speak(`@${username}: Error retrieving room data. Please try again.`);
+        return;
+      }
+      
+      // Access the DJs array directly from room metadata
+      const currentDjIds = data.room.metadata.djs || [];
+      const users = data.users || [];
+      let addedCount = 0;
+      
+      console.log(`Found ${currentDjIds.length} DJ IDs in the booth metadata`);
+      
+      // If there are no DJs in the booth, just report empty queue
+      if (currentDjIds.length === 0) {
+        publishQueueToRedis(); // Publish empty queue
+        bot.speak(`@${username}: No DJs currently on decks. Queue is empty.`);
+        console.log("No DJs in booth, queue remains empty");
+        return;
+      }
+      
+      // Find DJ names from user IDs in the booth and add them to the queue
+      for (let i = 0; i < currentDjIds.length; i++) {
+        const djId = currentDjIds[i];
+        
+        let djName = null;
+        
+        // Find the username associated with this ID
+        for (let j = 0; j < users.length; j++) {
+          if (users[j].userid === djId) {
+            djName = users[j].name;
+            break;
+          }
+        }
+        
+        if (djName) {
+          // Add DJ to the queue
+          djQueue.enqueue(djName);
+          addedCount++;
+          console.log(`Added DJ to queue: ${djName} (ID: ${djId})`);
+        } else {
+          console.log(`Could not find username for DJ ID: ${djId}`);
+        }
+      }
+      
+      // Always publish the queue since we cleared it
+      publishQueueToRedis();
+      
+      // Build response message
+      let message = `@${username}: DJ booth sync completed. `;
+      
+      if (addedCount > 0) {
+        message += `Added ${addedCount} DJs to the queue. `;
+      } else {
+        message += `No DJs found to add to the queue. `;
+      }
+      
+      message += `Current queue: ${djQueue.print() || "Empty"}`;
+      
+      // Speak the message without returning a promise
+      bot.speak(message);
+      console.log("getcurrentdjbooth command completed successfully");
+    } catch (innerErr) {
+      console.error("Error processing room info:", innerErr);
+      bot.speak(`@${username}: Error checking current DJs. Please try again.`);
+    }
+  });
+  
+  // Return a resolved promise immediately so other commands can continue
+  return Promise.resolve(); 
+}
 
 // Handle admin command functions
 function handleAdminCommand(command, username, targetUsername = null) {
@@ -187,6 +278,8 @@ function handleAdminCommand(command, username, targetUsername = null) {
             }
           } else if (!targetUsername) {
             speakPromise = speakAsync(`@${username}: Please specify a username to remove. Format: /@r username`);
+          } else {
+            speakPromise = speakAsync(`@${username} you don't have permission to remove users from the queue.`);
           }
           break;
           
@@ -203,6 +296,8 @@ function handleAdminCommand(command, username, targetUsername = null) {
             }
           } else if (!targetUsername) {
             speakPromise = speakAsync(`@${username}: Please specify a username to add. Format: /@a username`);
+          } else {
+            speakPromise = speakAsync(`@${username} you don't have permission to add users to the queue.`);
           }
           break;
           
@@ -231,7 +326,7 @@ function handleAdminCommand(command, username, targetUsername = null) {
         release();
       });
     } catch (err) {
-      console.error("Error in handleAdminCommand:", err);
+      console.error(`Error in handleAdminCommand for ${command}:`, err);
       release();
       return Promise.reject(err);
     }
@@ -299,9 +394,12 @@ function handleQueueCommand(command, username) {
           speakPromise = Promise.resolve();
       }
       
-      return speakPromise.finally(() => release());
+      return speakPromise.finally(() => {
+        console.log(`Releasing mutex after handling queue command ${command}`);
+        release();
+      });
     } catch (err) {
-      console.error("Error in handleQueueCommand:", err);
+      console.error(`Error in handleQueueCommand for ${command}:`, err);
       release();
       return Promise.reject(err);
     }
@@ -325,6 +423,7 @@ function handleQueueStatusCommand(username) {
       console.error("Error in handleQueueStatusCommand:", err);
       return Promise.reject(err);
     } finally {
+      console.log("Releasing mutex after handling status command");
       release();
     }
   });
@@ -344,28 +443,54 @@ bot.on("speak", function (data) {
   if (text === "/enablequeue" || text.endsWith(" /enablequeue")) {
     console.log("Processing enablequeue command");
     handleAdminCommand("enablequeue", username)
-      .catch(err => console.error("Error handling enablequeue:", err));
+      .catch(err => {
+        console.error("Error handling enablequeue:", err);
+        // Try to speak an error message to the room
+        bot.speak(`@${username}: An error occurred while processing the command. Please try again later.`);
+      });
     return;
   }
   
   if (text === "/disablequeue" || text.endsWith(" /disablequeue")) {
     console.log("Processing disablequeue command");
     handleAdminCommand("disablequeue", username)
-      .catch(err => console.error("Error handling disablequeue:", err));
+      .catch(err => {
+        console.error("Error handling disablequeue:", err);
+        bot.speak(`@${username}: An error occurred while processing the command. Please try again later.`);
+      });
     return;
   }
   
   if (text === "/lockqueue" || text.endsWith(" /lockqueue")) {
     console.log("Processing lockqueue command");
     handleAdminCommand("lockqueue", username)
-      .catch(err => console.error("Error handling lockqueue:", err));
+      .catch(err => {
+        console.error("Error handling lockqueue:", err);
+        bot.speak(`@${username}: An error occurred while processing the command. Please try again later.`);
+      });
     return;
   }
   
   if (text === "/clearqueue" || text.endsWith(" /clearqueue")) {
     console.log("Processing clearqueue command");
     handleAdminCommand("clearqueue", username)
-      .catch(err => console.error("Error handling clearqueue:", err));
+      .catch(err => {
+        console.error("Error handling clearqueue:", err);
+        bot.speak(`@${username}: An error occurred while processing the command. Please try again later.`);
+      });
+    return;
+  }
+  
+  // Add handler for the new getcurrentdjbooth command
+  // MODIFIED: Direct call to handleGetCurrentDjBooth, bypassing handleAdminCommand
+  if (text === "/getcurrentdjbooth" || text.endsWith(" /getcurrentdjbooth")) {
+    console.log("Processing getcurrentdjbooth command");
+    // Call the function directly instead of through handleAdminCommand
+    handleGetCurrentDjBooth(username)
+      .catch(err => {
+        console.error("Error in getcurrentdjbooth command:", err);
+        bot.speak(`@${username}: An error occurred while processing the command. Please try again later.`);
+      });
     return;
   }
   
@@ -373,7 +498,10 @@ bot.on("speak", function (data) {
   if (text === "/queuestatus" || text.endsWith(" /queuestatus")) {
     console.log("Processing queuestatus command");
     handleQueueStatusCommand(username)
-      .catch(err => console.error("Error handling queue status command:", err));
+      .catch(err => {
+        console.error("Error handling queue status command:", err);
+        bot.speak(`@${username}: An error occurred while processing the command. Please try again later.`);
+      });
     return;
   }
   
@@ -384,10 +512,16 @@ bot.on("speak", function (data) {
     if (parts.length > 1) {
       const targetUsername = parts[1].trim();
       handleAdminCommand("remove", username, targetUsername)
-        .catch(err => console.error("Error handling admin remove:", err));
+        .catch(err => {
+          console.error("Error handling admin remove:", err);
+          bot.speak(`@${username}: An error occurred while processing the command. Please try again later.`);
+        });
     } else {
       handleAdminCommand("remove", username)
-        .catch(err => console.error("Error handling admin remove:", err));
+        .catch(err => {
+          console.error("Error handling admin remove:", err);
+          bot.speak(`@${username}: An error occurred while processing the command. Please try again later.`);
+        });
     }
     return;
   }
@@ -399,10 +533,16 @@ bot.on("speak", function (data) {
     if (parts.length > 1) {
       const targetUsername = parts[1].trim();
       handleAdminCommand("add", username, targetUsername)
-        .catch(err => console.error("Error handling admin add:", err));
+        .catch(err => {
+          console.error("Error handling admin add:", err);
+          bot.speak(`@${username}: An error occurred while processing the command. Please try again later.`);
+        });
     } else {
       handleAdminCommand("add", username)
-        .catch(err => console.error("Error handling admin add:", err));
+        .catch(err => {
+          console.error("Error handling admin add:", err);
+          bot.speak(`@${username}: An error occurred while processing the command. Please try again later.`);
+        });
     }
     return;
   }
@@ -412,21 +552,30 @@ bot.on("speak", function (data) {
   if (text === "/q" || text.endsWith(" /q")) {
     console.log("Processing queue view command");
     handleQueueCommand("q", username)
-      .catch(err => console.error("Error handling queue command /q:", err));
+      .catch(err => {
+        console.error("Error handling queue command /q:", err);
+        bot.speak(`@${username}: An error occurred while processing the command. Please try again later.`);
+      });
     return;
   }
   
   if (text === "/a" || text.endsWith(" /a")) {
     console.log("Processing queue add command");
     handleQueueCommand("a", username)
-      .catch(err => console.error("Error handling queue command /a:", err));
+      .catch(err => {
+        console.error("Error handling queue command /a:", err);
+        bot.speak(`@${username}: An error occurred while processing the command. Please try again later.`);
+      });
     return;
   }
   
   if (text === "/r" || text.endsWith(" /r")) {
     console.log("Processing queue remove command");
     handleQueueCommand("r", username)
-      .catch(err => console.error("Error handling queue command /r:", err));
+      .catch(err => {
+        console.error("Error handling queue command /r:", err);
+        bot.speak(`@${username}: An error occurred while processing the command. Please try again later.`);
+      });
     return;
   }
   
@@ -473,6 +622,7 @@ bot.on("add_dj", function (data) {
         );
       }
     } finally {
+      console.log("Releasing mutex after add_dj handler");
       release();
     }
   }).catch(err => console.error("Error in add_dj handler:", err));
@@ -493,6 +643,7 @@ bot.on("endsong", function (data) {
         bot.remDj(currentDJId);
       }
     } finally {
+      console.log("Releasing mutex after endsong handler");
       release();
     }
   }).catch(err => console.error("Error in endsong handler:", err));

@@ -1,105 +1,86 @@
-# DeepCut DJ Queue Bot
+# DJ Queue Bot
 
-A Node.js bot for managing DJ queues in TurntableAPI-compatible music rooms. This bot maintains an organized queue system for live DJs, enforces queue order, and provides real-time queue updates through Redis.
+A Turntable.fm bot that manages a live DJ queue system for music rooms, allowing fair and organized DJ rotations.
+
+## Overview
+
+The DJ Queue Bot provides a structured system for managing DJs in a Turntable.fm room. It maintains a queue of users waiting to DJ, publishes queue updates via Redis, and enforces queue-based DJ booth access when enabled.
 
 ## Features
 
-- **DJ Queue Management**: Maintains an ordered list of users waiting to DJ
-- **Admin Controls**: Special commands for moderators to manage the queue
-- **Redis Integration**: Real-time queue publication to external services
-- **Song Tracking**: Publishes current song information to Redis
-- **Queue Enforcement**: Automatically removes DJs who aren't in the queue
+- **Queue Management**: Users can add themselves to the queue, remove themselves, and view the current queue
+- **Admin Controls**: Admins can enable/disable the queue, lock/unlock it, add/remove specific users, and clear the queue
+- **DJ Booth Enforcement**: When enabled, only users in the queue can DJ
+- **Redis Publishing**: Live queue updates are published to Redis for integration with external services
+- **Current DJ Tracking**: Tracks current song information and publishes it to Redis
 
-## Setup
-
-### Prerequisites
-
-- Node.js
-- npm or yarn
-- Redis instance (Upstash recommended)
-- TurntableAPI bot account
-
-### Environment Variables
-
-Set up the following environment variables:
-
-```
-DEEPCUT_BOT_AUTH=your_bot_auth_token
-DEEPCUT_BOT_USERID=your_bot_user_id
-DEEPCUT_BOT_ROOMID=your_room_id
-UPSTASH_REDIS_AUTH=your_redis_connection_string
-ADMIN_USERNAME_1=admin_username1
-ADMIN_USERNAME_2=admin_username2
-```
-
-### Installation
-
-1. Clone the repository
-2. Install dependencies: `npm install`
-3. Run the bot: `node deepcutBot.js`
-
-## Usage
+## Commands
 
 ### User Commands
 
-| Command | Description |
-|---------|-------------|
-| `/q` | View the current DJ queue |
-| `/a` | Add yourself to the DJ queue |
-| `/r` | Remove yourself from the DJ queue |
-| `/queuestatus` | View full queue system status |
+- `/q` - View the current DJ queue
+- `/a` - Add yourself to the DJ queue
+- `/r` - Remove yourself from the DJ queue
+- `/queuestatus` - Display the current status of the queue system
 
 ### Admin Commands
 
-| Command | Description |
-|---------|-------------|
-| `/enablequeue` | Enable the DJ queue system |
-| `/disablequeue` | Disable the DJ queue system |
-| `/lockqueue` | Toggle lock state of the queue |
-| `/clearqueue` | Clear all users from the queue |
-| `/@a username` | Add a specific user to the queue |
-| `/@r username` | Remove a specific user from the queue |
+- `/enablequeue` - Enable the queue system
+- `/disablequeue` - Disable the queue system
+- `/lockqueue` - Toggle lock status of the queue (locked = admin-only modifications)
+- `/clearqueue` - Clear all users from the queue
+- `/getcurrentdjbooth` - Sync the queue with current DJs in the booth
+- `/@a username` - Add a specific user to the queue (admin only)
+- `/@r username` - Remove a specific user from the queue (admin only)
+
+## Setup
+
+1. Install dependencies:
+   ```
+   npm install ttapi ioredis async-mutex
+   ```
+
+2. Set the following environment variables:
+   - `DEEPCUT_BOT_AUTH` - Your Turntable.fm bot authentication token
+   - `DEEPCUT_BOT_USERID` - Your Turntable.fm bot user ID
+   - `DEEPCUT_BOT_ROOMID` - The Turntable.fm room ID to operate in
+   - `UPSTASH_REDIS_AUTH` - Redis connection string
+   - `ADMIN_USERNAME_1` - Username of the first admin
+   - `ADMIN_USERNAME_2` - Username of the second admin
+
+3. You'll need to create a `queue.js` file for the Queue class implementation
 
 ## Redis Channels
 
 The bot publishes to two Redis channels:
 
-- **channel-1**: Queue state information (updated every 10 seconds when enabled)
-  ```json
-  {
-    "DJs": "user1, user2, user3",
-    "locked": false
-  }
-  ```
+- `channel-1`: DJ queue updates in the format: `{ DJs: [username list], locked: boolean }`
+- `channel-2`: Current song information in the format: `{ songName, artist, djName, startTime, roomName }`
 
-- **channel-2**: Current song information (published on each new song)
-  ```json
-  {
-    "songName": "Example Song",
-    "artist": "Example Artist",
-    "djName": "DJ Username",
-    "startTime": 1619123456789,
-    "roomName": "Room Name"
-  }
-  ```
+## Error Handling
 
-## Queue Behavior
+The bot includes comprehensive error handling with the following features:
+- Mutex locks to prevent race conditions 
+- Error cooldowns to prevent message spam
+- Detailed logging for troubleshooting
+- Promises for asynchronous operations
 
-- When the queue is enabled, users must be in the queue to DJ
-- Users attempting to DJ without being in the queue will be removed
-- The bot sends a private message explaining how to join the queue
+## Implementation Details
+
+- Uses a mutex to prevent race conditions in queue operations
+- Implemented with Promise-based async/await patterns
+- Maintains state for queue enabling/locking
+- Periodic publishing to Redis for external system integration
+
+## Security
+
+Only authenticated admins can perform privileged actions like:
+- Enabling/disabling the queue system
+- Clearing the queue
+- Adding/removing specific users
+
+## Notes
+
+- The queue can be disabled temporarily for open DJ sessions
 - When the queue is locked, only admins can modify it
-- After each song, the bot verifies the current DJ is in the queue
-
-## Troubleshooting
-
-- If commands aren't registering, ensure they're typed exactly as shown
-- Commands can be typed at the end of a message (e.g., "Hello everyone /q")
-- Redis connection issues will appear in the console logs
-- Mutex locks prevent race conditions when multiple commands run simultaneously
-
-## Dependencies
-
-- ttapi: TurntableAPI client library
-- ioredis: Redis client
-- async-mutex: Mutex for state management
+- Users not in the queue will be automatically removed from the DJ booth

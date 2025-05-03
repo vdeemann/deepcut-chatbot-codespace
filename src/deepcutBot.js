@@ -429,6 +429,60 @@ function handleQueueStatusCommand(username) {
   });
 }
 
+// ADD NEW FUNCTIONS HERE
+// Function to display all admin commands
+function handleAdminCommandsDisplay(username) {
+  console.log(`User ${username} requested admin commands list`);
+  
+  return mutex.acquire().then((release) => {
+    try {
+      const commandsList = `
+Admin Commands for DJ Queue System:
+• /enablequeue - Enable the DJ queue system
+• /disablequeue - Disable the DJ queue system
+• /lockqueue - Toggle queue lock status (locked/unlocked)
+• /clearqueue - Clear all entries from the queue
+• /getcurrentdjbooth - Add current DJs to the queue
+• /@a [username] - Add specific user to the queue
+• /@r [username] - Remove specific user from the queue
+• /queuestatus - Show complete system status
+      `;
+      
+      return speakAsync(commandsList);
+    } catch (err) {
+      console.error("Error in handleAdminCommandsDisplay:", err);
+      return Promise.reject(err);
+    } finally {
+      release();
+    }
+  });
+}
+
+// Function to display all user commands
+function handleUserCommandsDisplay(username) {
+  console.log(`User ${username} requested user commands list`);
+  
+  return mutex.acquire().then((release) => {
+    try {
+      const commandsList = `
+User Commands for DJ Queue System:
+• /q - View the current DJ queue
+• /a - Add yourself to the DJ queue
+• /r - Remove yourself from the DJ queue
+• /queuestatus - Show complete system status
+• /usercommands - Display this help message
+      `;
+      
+      return speakAsync(commandsList);
+    } catch (err) {
+      console.error("Error in handleUserCommandsDisplay:", err);
+      return Promise.reject(err);
+    } finally {
+      release();
+    }
+  });
+}
+
 // Handle chat commands - critical fixes to make commands work
 bot.on("speak", function (data) {
   const text = data.text.trim();
@@ -500,6 +554,34 @@ bot.on("speak", function (data) {
     handleQueueStatusCommand(username)
       .catch(err => {
         console.error("Error handling queue status command:", err);
+        bot.speak(`@${username}: An error occurred while processing the command. Please try again later.`);
+      });
+    return;
+  }
+  
+  // ADD NEW COMMAND HANDLERS HERE
+  // Command to show all admin commands - only visible to admins
+  if (text === "/@commands" || text.endsWith(" /@commands")) {
+    console.log("Processing admin commands display request");
+    if (isAdmin(username)) {
+      handleAdminCommandsDisplay(username)
+        .catch(err => {
+          console.error("Error displaying admin commands:", err);
+          bot.speak(`@${username}: An error occurred while processing the command. Please try again later.`);
+        });
+    } else {
+      // For non-admins, don't show admin commands
+      bot.speak(`@${username}: You don't have permission to view admin commands.`);
+    }
+    return;
+  }
+
+  // Command to show all user commands - visible to everyone
+  if (text === "/usercommands" || text.endsWith(" /usercommands")) {
+    console.log("Processing user commands display request");
+    handleUserCommandsDisplay(username)
+      .catch(err => {
+        console.error("Error displaying user commands:", err);
         bot.speak(`@${username}: An error occurred while processing the command. Please try again later.`);
       });
     return;

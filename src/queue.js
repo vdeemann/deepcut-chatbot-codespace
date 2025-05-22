@@ -44,7 +44,7 @@ class Queue {
       if (this.isEmpty()) {
         return "Queue is empty";
       }
-      return this.items.join(", ") + " is in the queue.";
+      return this.items.join(", ");
     }
   
     // Check if an element exists in the queue

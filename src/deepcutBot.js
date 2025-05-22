@@ -26,7 +26,7 @@ const ERROR_COOLDOWN = 5000; // 5 seconds
 const mutex = new Mutex();
 
 // MODIFIED: Track DJ song counts and queue size enforcement
-const QUEUE_SIZE_THRESHOLD = 6; // When queue reaches this size, enforce one song per DJ
+zconst QUEUE_SIZE_THRESHOLD = 6; // When queue reaches this size, enforce one song per DJ
 const djSongCounts = new Map(); // Track how many songs each DJ has played in their turn
 let enforceOneSongPerDJ = false; // Dynamic flag based on queue size
 // NEW: Add wait time constant (1 minute in milliseconds)

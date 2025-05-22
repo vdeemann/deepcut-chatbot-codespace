@@ -285,31 +285,15 @@ client.on("messageCreate", async (message) => {
   // Ignore messages from bots
   if (message.author.bot) return;
   
-  // Respond to !queue command with data from Redis
-  if (message.content === "!queue") {
-    const djsArray = getDJsArray();
-    message.reply(djsArray.length > 0 ? `DJ Queue: ${djsArray.join(", ")}` : "No DJs in queue.");
-  }
-  
-  // Respond to !song command
-  if (message.content === "!song") {
-    if (currentSong && currentSong.songName && currentSong.artist) {
-      message.reply(`Now playing: ${currentSong.songName} by ${currentSong.artist}`);
-    } else {
-      message.reply("No song information available.");
-    }
-  }
-  
-  // Handle !playing command
+  // Handle !playing command - simplified version
   if (message.content === "!playing") {
-    // Get the current DJ and number of DJs on deck
+    // Get the current DJ
     const currentDJ = currentSong.djName || "No DJ";
     const djsArray = getDJsArray();
-    const djCount = djsArray.length;
     
     // Format current track information
     const trackInfo = currentSong.songName && currentSong.artist 
-      ? `${currentSong.songName} by ${currentSong.artist}`
+      ? `${currentSong.artist} - ${currentSong.songName}`
       : "No track information available";
     
     // Create an embed for better formatting
@@ -317,13 +301,7 @@ client.on("messageCreate", async (message) => {
       .setColor(0x0099FF)
       .setTitle('🎧 Now Playing')
       .setDescription(trackInfo)
-      .addFields(
-        { name: 'Current DJ', value: currentDJ, inline: true },
-        { name: 'DJs on Deck', value: `${djCount} DJ${djCount !== 1 ? 's' : ''}`, inline: true },
-        { name: 'Room', value: currentSong.roomName || "Unknown", inline: true }
-      )
-      .setFooter({ text: 'Radio Station Bot' })
-      .setTimestamp();
+      .addFields({ name: 'Current DJ', value: currentDJ, inline: true });
     
     // If there are DJs in queue, add them to the embed
     if (djsArray.length > 0) {
@@ -334,13 +312,6 @@ client.on("messageCreate", async (message) => {
       
       embed.addFields({ name: 'DJ Queue', value: displayDJs });
     }
-    
-    // Add queue status (locked/unlocked)
-    embed.addFields({ 
-      name: 'Queue Status', 
-      value: queueData && queueData.locked ? '🔒 Locked' : '🔓 Open', 
-      inline: true 
-    });
     
     message.reply({ embeds: [embed] });
   }

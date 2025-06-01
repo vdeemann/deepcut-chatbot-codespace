@@ -1,134 +1,352 @@
 # DJ Queue Bot
 
-A Turntable.fm bot for managing a DJ queue system in music rooms.
+A sophisticated Turntable.fm bot for managing DJ queues in music rooms with automatic queue management, fair play enforcement, and real-time updates.
 
-## Overview
+## 🎵 Overview
 
-The DJ Queue Bot provides an automated queue management system for Turntable.fm rooms, allowing users to join a virtual line to take turns DJing. This helps manage crowded rooms where many users want to DJ, ensuring everyone gets a fair chance to play music.
+The DJ Queue Bot provides an automated queue management system for Turntable.fm rooms, designed to handle crowded rooms where many users want to DJ. It ensures everyone gets a fair chance to play music through intelligent queue management, dynamic rule enforcement, and comprehensive admin controls.
 
-## Features
+## ✨ Key Features
 
-- **Queue Management**: Users can join, leave, and view the current DJ queue
-- **Admin Controls**: Room administrators can enable/disable the queue, lock/unlock it, add/remove specific users, and more
-- **Dynamic Queue Rules**: Automatically enforces single-song limits when the queue gets crowded (6+ users)
-- **Wait Time System**: Implements a 1-minute cooldown period before DJs can play again after their turn
-- **Live Updates**: Publishes queue status to Redis for potential integration with external displays or websites
-- **Song Information**: Publishes current playing song information to Redis
+### 🎯 Smart Queue Management
+- **Automatic DJ Detection**: Automatically adds users to the queue when they join the decks
+- **Dynamic Rule Enforcement**: Switches between relaxed and strict modes based on queue size
+- **Fair Play System**: Prevents users from monopolizing the decks when others are waiting
+- **Persistent Queue**: Users remain in queue even when stepping down from decks
 
-## Commands
+### ⚡ Real-Time Features
+- **Live Queue Updates**: Publishes queue status to Redis every 10 seconds
+- **Song Tracking**: Broadcasts current song information for external integrations
+- **Instant Notifications**: Real-time feedback for all queue operations
+- **Auto-Sync**: Synchronizes with current DJ booth state
 
-### User Commands
+### 🛡️ Advanced Controls
+- **Admin Override System**: Comprehensive admin controls for queue management
+- **Queue Locking**: Prevents unauthorized queue modifications
+- **Wait Time Management**: Configurable cooldown periods between DJ turns
+- **Graceful User Handling**: Manages user disconnections and refreshes intelligently
 
-- `/q` - View the current DJ queue
-- `/a` - Add yourself to the DJ queue
-- `/r` - Remove yourself from the DJ queue
-- `/queuestatus` - Show complete system status
-- `/usercommands` - Display all available user commands
+## 📋 Queue Rules & Behavior
 
-### Admin Commands
+### Dynamic Queue Modes
 
-- `/enablequeue` - Enable the DJ queue system
-- `/disablequeue` - Disable the DJ queue system
-- `/lockqueue` - Toggle queue lock status (locked/unlocked)
-- `/clearqueue` - Clear all entries from the queue
-- `/getcurrentdjbooth` - Add current DJs to the queue
-- `/resetturns` - Reset all DJ wait times 
-- `/@a [username]` - Add specific user to the queue
-- `/@r [username]` - Remove specific user from the queue
-- `/@commands` - Display all available admin commands
+**Relaxed Mode** (< 6 users in queue):
+- DJs can play multiple songs per turn
+- No automatic removal from decks
+- Flexible queue management
 
-## Queue Rules
+**Strict Mode** (6+ users in queue):
+- Each DJ limited to **one song per turn**
+- **1-minute cooldown** before rejoining decks
+- Automatic enforcement to ensure fairness
+- Users remain in queue during cooldown
 
-1. When fewer than 6 people are in the queue, DJs can play multiple songs per turn
-2. When 6 or more people are in the queue, each DJ is limited to one song per turn
-3. After playing their song in a crowded room, DJs must wait 1 minute before rejoining the decks
-4. Users remain in the queue even during their wait period
-5. Admins can override any of these restrictions
+### User Lifecycle Management
 
-## Installation
+1. **Joining**: Users automatically added to queue when they get on decks
+2. **Playing**: Song count tracked per DJ turn
+3. **Cooldown**: 1-minute wait period in strict mode
+4. **Rejoining**: Can rejoin queue after cooldown expires
+5. **Leaving**: 30-second grace period for page refreshes
 
-1. Set up the following environment variables:
-   - `DEEPCUT_BOT_AUTH` - Bot authentication token
-   - `DEEPCUT_BOT_USERID` - Bot user ID
-   - `DEEPCUT_BOT_ROOMID` - Room ID where the bot will operate
-   - `UPSTASH_REDIS_AUTH` - Redis connection URL
-   - `ADMIN_USERNAME_1` - First admin username
-   - `ADMIN_USERNAME_2` - Second admin username
+## 🎮 Commands Reference
 
-2. Install dependencies:
+### 👥 User Commands
+
+| Command | Description |
+|---------|-------------|
+| `/q` | View the current DJ queue |
+| `/a` | Add yourself to the DJ queue |
+| `/r` | Remove yourself from the DJ queue |
+| `/queuestatus` | Show complete system status with wait times |
+| `/usercommands` | Display all available user commands |
+
+### 🔧 Admin Commands
+
+| Command | Description |
+|---------|-------------|
+| `/enablequeue` | Enable the DJ queue system |
+| `/disablequeue` | Disable the DJ queue system |
+| `/lockqueue` | Toggle queue lock status |
+| `/clearqueue` | Clear all entries from the queue |
+| `/getcurrentdjbooth` | Sync queue with current DJs |
+| `/resetturns` | Reset all DJ wait times |
+| `/shutdown` | Gracefully shutdown the bot |
+| `/@a [username]` | Add specific user to queue |
+| `/@r [username]` | Remove specific user from queue |
+| `/@commands` | Display admin command reference |
+
+## 🚀 Installation & Setup
+
+### Prerequisites
+
+- Node.js (v14 or higher)
+- Redis server or Redis cloud service
+- Turntable.fm bot account
+
+### Environment Variables
+
+Create a `.env` file with the following variables:
+
+```env
+# Bot Configuration
+DEEPCUT_BOT_AUTH=your_bot_auth_token
+DEEPCUT_BOT_USERID=your_bot_user_id
+DEEPCUT_BOT_ROOMID=target_room_id
+
+# Redis Configuration
+UPSTASH_REDIS_AUTH=redis://your_redis_url
+
+# Discord Configuration (optional)
+DISCORD_TOKEN=your_discord_bot_token
+
+# Admin Users (set at least one)
+ADMIN_USERNAME_1=admin_username_1
+ADMIN_USERNAME_2=admin_username_2
+ADMIN_USERNAME_3=admin_username_3
+```
+
+### Installation Steps
+
+1. **Clone and install dependencies:**
+   ```bash
+   npm install ttapi ioredis async-mutex discord.js
    ```
-   npm install ttapi ioredis async-mutex
-   ```
 
-3. Ensure you have the `queue.js` file in the same directory (provides the Queue implementation)
+2. **Ensure required files:**
+   - `queue.js` - Queue implementation class
+   - `deepcutBot.js` - Main Turntable.fm bot file
+   - `discordBot.js` - Discord integration bot (optional)
+   - `.env` - Environment configuration
 
-4. Run the bot:
-   ```
+3. **Start the bots:**
+   ```bash
+   # Start the main Turntable.fm bot
    node deepcutBot.js
+   
+   # Start the Discord bot (in separate terminal)
+   node discordBot.js
    ```
 
-## Redis Integration
+## 🔌 Redis Integration & Discord Bot
 
-The bot publishes to two Redis channels:
+The bot provides real-time data through Redis channels for external integrations and includes a companion Discord bot for enhanced functionality.
 
-1. `channel-1`: Queue status updates (every 10 seconds)
-   ```json
-   { 
-     "DJs": "username1, username2, username3",
-     "locked": false
-   }
-   ```
+### Redis Channels
 
-2. `channel-2`: Current song information (on each new song)
-   ```json
-   {
-     "songName": "Song Title",
-     "artist": "Artist Name",
-     "djName": "DJ Username",
-     "startTime": 1683842567890,
-     "roomName": "Room Name"
-   }
-   ```
+#### Channel 1: Queue Status (`channel-1`)
+Published every 10 seconds with current queue state:
 
-## Key Features Explained
+```json
+{
+  "DJs": "username1, username2, username3",
+  "locked": false
+}
+```
 
-### Dynamic Queue Size Enforcement
+**Special States:**
+- `"DJs": "disabled"` - Queue system is disabled
+- `"DJs": "Empty"` - No users in queue
 
-When the queue reaches 6 or more users, the bot automatically enforces a "one song per turn" rule to ensure fairness. This prevents users from hogging the decks when many others are waiting.
+#### Channel 2: Song Information (`channel-2`)
+Published on every new song:
 
-### DJ Wait Time System
+```json
+{
+  "songName": "Song Title",
+  "artist": "Artist Name", 
+  "djName": "DJ Username",
+  "startTime": 1683842567890,
+  "roomName": "Room Name"
+}
+```
 
-To prevent the same users from continuously cycling through the queue, the bot implements a 1-minute cooldown period. Users remain in the queue during their cooldown but cannot get on the decks until the cooldown expires.
+### Discord Bot Integration
 
-### Mutex-Based Concurrency Control
+The companion Discord bot subscribes to both Redis channels and provides additional features for community engagement and event scheduling.
 
-The bot uses a mutex (mutual exclusion) mechanism to prevent race conditions when multiple users interact with the queue simultaneously:
+#### Discord Bot Features
 
-- All queue operations acquire a mutex lock before execution
-- Commands are processed sequentially to maintain queue integrity
-- Redis publishing operations are protected by mutex locks
-- Each function properly releases the mutex upon completion, even when errors occur
-- This prevents data corruption when multiple chat commands are received in rapid succession
+**🎵 Live Music Status:**
+- Real-time display of currently playing tracks
+- Current DJ information
+- Live queue status updates
 
-### Admin Override Controls
+**📅 First Friday Event Management:**
+- Monthly DJ event scheduling system
+- Timezone-aware slot booking
+- Automated conflict prevention
+- Multi-month schedule viewing
 
-Room administrators have full control over the queue and can:
-- Add or remove specific users
-- Reset wait times
-- Clear the entire queue
-- Lock the queue to prevent changes
+#### Discord Commands
 
-## Troubleshooting
+| Command | Description |
+|---------|-------------|
+| `!playing` | Show currently playing track and DJ queue |
+| `!djtimes` | Display next First Friday DJ schedule |
+| `!djtimes YYYY MM` | Show specific month's First Friday schedule |
+| `!signup <slot> <timezone>` | Sign up for a First Friday DJ slot |
+| `!firstfridays` | List next 6 upcoming First Friday events |
 
-- If commands aren't being recognized, check that your message format is exactly as specified
-- For admin commands, ensure the admin usernames are correctly set in environment variables
-- If the queue state seems inconsistent, try using `/getcurrentdjbooth` to synchronize with the current state
-- If users aren't being properly removed from the decks, make sure the bot has moderator privileges in the room
+#### First Friday Event System
 
-## License
+The Discord bot includes a sophisticated event management system for monthly "First Friday" DJ events:
 
-[Add your license information here]
+**Features:**
+- **Automatic Date Calculation**: Finds the first Friday of each month
+- **Timezone Support**: Handles global DJs with timezone conversion
+- **Conflict Prevention**: Prevents double-booking and unreasonable hours
+- **Persistent Storage**: Schedules saved in Redis with unique keys
+- **Smart Constraints**: 
+  - No scheduling during 11pm-7am in DJ's local time
+  - One slot per DJ per event
+  - Prevents conflicts with existing bookings
 
-## Support
+**Supported Timezones:**
+- `America/New_York` (EDT/EST)
+- `America/Chicago` (CDT/CST)
+- `America/Denver` (MDT/MST)
+- `America/Los_Angeles` (PDT/PST)
+- `Europe/London` (BST/GMT)
+- `Europe/Paris` (CEST/CET)
+- `Asia/Tokyo` (JST)
+- `Australia/Sydney` (AEST/AEDT)
 
-[Add support contact information here]
+**Available Time Slots:**
+- 9:00 AM UTC
+- 10:00 AM UTC
+- 11:00 AM UTC
+- 1:00 PM UTC
+- 2:00 PM UTC
+- 3:00 PM UTC
+- 4:00 PM UTC
+
+#### Discord Bot Setup
+
+**Additional Environment Variables:**
+```env
+# Discord Configuration
+DISCORD_TOKEN=your_discord_bot_token
+```
+
+**Required Permissions:**
+- Send Messages
+- Embed Links
+- Read Message History
+- Use Slash Commands (optional)
+
+**Installation:**
+```bash
+npm install discord.js
+```
+
+## 🏗️ Architecture & Design
+
+### Concurrency Control
+- **Mutex-based locking** prevents race conditions
+- **Sequential command processing** maintains data integrity
+- **Atomic queue operations** ensure consistency
+- **Error-safe releases** prevent deadlocks
+
+### Event-Driven Architecture
+- **Real-time event handling** for user actions
+- **Automatic state synchronization** with room events
+- **Graceful error recovery** and logging
+- **Clean shutdown procedures**
+
+### Configuration Constants
+
+```javascript
+const QUEUE_SIZE_THRESHOLD = 6;    // When strict mode activates
+const QUEUE_FULL_SIZE = 5;         // "Full queue" announcement
+const DJ_WAIT_TIME = 60000;        // 1-minute cooldown (ms)
+const REFRESH_GRACE_PERIOD = 30000; // 30-second rejoin window
+const PUBLISH_INTERVAL = 10000;    // Redis update frequency
+```
+
+## 🎛️ Advanced Features
+
+### Smart User Management
+- **Refresh Detection**: Distinguishes between disconnects and page refreshes
+- **Grace Period Handling**: 30-second window for users to rejoin
+- **Automatic Queue Maintenance**: Removes users who leave permanently
+
+### Dynamic Enforcement
+- **Automatic Mode Switching**: Seamlessly transitions between relaxed/strict modes
+- **Real-time Announcements**: Keeps users informed of rule changes
+- **Intelligent Notifications**: Context-aware messaging
+
+### Admin Tools
+- **Comprehensive Override**: Admins can bypass all restrictions
+- **Bulk Operations**: Clear queues, reset timers, force sync
+- **System Monitoring**: Real-time status reporting
+
+## 🐛 Troubleshooting
+
+### Common Issues
+
+**Commands not working:**
+- Verify exact command format (case-sensitive)
+- Check bot has speaking privileges in room
+- Ensure queue system is enabled for user commands
+
+**Admin commands failing:**
+- Confirm username matches environment variables exactly
+- Check bot has moderator privileges for user removal
+- Verify environment variables are loaded correctly
+
+**Queue state inconsistencies:**
+- Use `/getcurrentdjbooth` to resync with room state
+- Check Redis connection for live updates
+- Restart bot if persistent issues occur
+
+**Users not being managed properly:**
+- Ensure bot has moderator privileges
+- Check for network connectivity issues
+- Verify room ID is correct in configuration
+
+### Debug Mode
+Enable verbose logging by setting:
+```bash
+DEBUG=true node deepcutBot.js
+```
+
+## 📊 Monitoring & Metrics
+
+The bot provides comprehensive logging for:
+- Queue operations and state changes
+- User lifecycle events (join/leave/refresh)
+- Command execution and errors
+- Redis publish/subscribe activity
+- Admin actions and overrides
+
+## 🔒 Security Considerations
+
+- **Admin Authentication**: Username-based admin verification
+- **Command Validation**: Input sanitization and validation
+- **Rate Limiting**: Built-in cooldowns prevent spam
+- **Graceful Shutdown**: Clean termination on system signals
+
+## 🤝 Contributing
+
+When contributing to this project:
+1. Maintain mutex-based concurrency control
+2. Add comprehensive error handling
+3. Update documentation for new features
+4. Test edge cases thoroughly
+5. Follow existing code patterns
+
+## 📄 License
+
+This project is licensed under the GNU General Public License v3.0 - see the LICENSE file for details.
+
+## 📞 Support
+
+For issues, questions, or feature requests:
+- Create an issue in the project repository
+- Check the troubleshooting section above
+- Review the Redis integration logs for connectivity issues
+
+---
+
+**Made with 🎵 for the Turntable.fm community**

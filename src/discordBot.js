@@ -48,13 +48,116 @@ function getDJsArray() {
     return queueData.DJs;
   }
   
-  // If DJs is a string, split it by commas and trim whitespace
+  // If DJs is a string, check for empty queue indicators
   if (typeof queueData.DJs === 'string') {
-    return queueData.DJs.split(',').map(dj => dj.trim());
+    const djString = queueData.DJs.trim();
+    
+    // Handle empty queue cases
+    if (djString === "" || djString === "Empty" || djString === "Queue is empty") {
+      return [];
+    }
+    
+    // Split by commas and trim whitespace, filter out empty strings
+    return djString.split(',').map(dj => dj.trim()).filter(dj => dj !== "");
   }
   
   // Fallback to empty array
   return [];
+}
+
+// NEW: Function to request current room info from turntable bot
+async function requestCurrentRoomInfo() {
+  try {
+    // Send a request to the turntable bot to get fresh room info
+    await redisClient.publish("bot-commands", JSON.stringify({
+      command: "getCurrentRoomInfo",
+      timestamp: Date.now()
+    }));
+    
+    console.log("Requested current room info from turntable bot");
+    return true;
+  } catch (error) {
+    console.error("Error requesting room info:", error);
+    return false;
+  }
+}
+
+// NEW: Function to check if turntable bot is online
+async function checkTurntableBotStatus() {
+  try {
+    // Send a ping command to check if the bot is responding
+    await redisClient.publish("bot-commands", JSON.stringify({
+      command: "ping",
+      timestamp: Date.now()
+    }));
+    
+    console.log("Sent ping to turntable bot");
+    
+    // Wait for a pong response with timeout
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        console.log("Turntable bot ping timeout - bot appears offline");
+        resolve(false);
+      }, 3000); // 3 second timeout
+      
+      // Listen for pong response
+      const pingListener = (channel, message) => {
+        if (channel === "bot-commands") {
+          try {
+            const data = JSON.parse(message);
+            if (data.command === "pong") {
+              console.log("Received pong from turntable bot - bot is online");
+              clearTimeout(timeout);
+              redisSub.off("message", pingListener);
+              resolve(true);
+            }
+          } catch (e) {
+            // Ignore parse errors for other messages
+          }
+        }
+      };
+      
+      redisSub.on("message", pingListener);
+    });
+  } catch (error) {
+    console.error("Error checking turntable bot status:", error);
+    return false;
+  }
+}
+
+// NEW: Function to wait for updated data with timeout
+function waitForUpdatedData(originalTimestamp, timeout = 5000) {
+  return new Promise((resolve) => {
+    const startTime = Date.now();
+    let checkCount = 0;
+    
+    const checkForUpdate = () => {
+      checkCount++;
+      console.log(`Check #${checkCount}: Current timestamp ${currentSong.startTime}, Original timestamp ${originalTimestamp}`);
+      
+      // Check if we received new data (timestamp is newer OR song data changed)
+      if (currentSong.startTime > originalTimestamp || 
+          (currentSong.djName && currentSong.djName !== "Unknown") ||
+          (currentSong.songName && currentSong.songName !== "Unknown")) {
+        console.log("Updated data detected!");
+        resolve(true);
+        return;
+      }
+      
+      // Check if timeout reached
+      if (Date.now() - startTime > timeout) {
+        console.log("Timeout reached, no updated data received");
+        resolve(false);
+        return;
+      }
+      
+      // Check again in 200ms
+      setTimeout(checkForUpdate, 200);
+    };
+    
+    // Start checking after a brief delay to allow message processing
+    setTimeout(checkForUpdate, 100);
+  });
 }
 
 // Helper function to get or initialize schedule for a first Friday
@@ -200,7 +303,7 @@ function canScheduleDJ(djName, djTimezone, date, hour, existingSchedule) {
   return true;
 }
 
-// Helper function to display First Friday schedule
+// Helper function to display DJ Event schedule
 async function displayFirstFridaySchedule(message, date) {
   try {
     // Get schedule for the requested first Friday
@@ -209,9 +312,7 @@ async function displayFirstFridaySchedule(message, date) {
     // Create a formatted display of the schedule
     const embed = new EmbedBuilder()
       .setColor(0x00FF00)
-      .setTitle(`🎧 First Friday DJ Schedule - ${formatDate(date)}`)
-      .setFooter({ text: 'DJ Radio Scheduler' })
-      .setTimestamp();
+      .setTitle(`🎧 DJ Event Schedule - ${formatDate(date)}`);
     
     // Build the schedule display
     let scheduleDisplay = '';
@@ -237,13 +338,13 @@ async function displayFirstFridaySchedule(message, date) {
     
     message.reply({ embeds: [embed] });
   } catch (error) {
-    console.error('Error displaying First Friday times:', error);
+    console.error('Error displaying DJ Event times:', error);
     message.reply('Sorry, there was an error retrieving the schedule.');
   }
 }
 
 // Subscribe to Redis channels
-redisSub.subscribe("channel-1", "channel-2", (err, count) => {
+redisSub.subscribe("channel-1", "channel-2", "bot-commands", (err, count) => {
   if (err) {
     console.error("Failed to subscribe:", err.message);
   } else {
@@ -253,7 +354,7 @@ redisSub.subscribe("channel-1", "channel-2", (err, count) => {
 
 // Handle incoming Redis messages
 redisSub.on("message", (channel, message) => {
-  console.log(`Received ${message} from ${channel}`);
+  console.log(`Received message from ${channel}: ${message}`);
   
   try {
     // Parse JSON messages from each channel
@@ -267,11 +368,19 @@ redisSub.on("message", (channel, message) => {
     if (channel === "channel-2" && message.trim() !== "") {
       // Current song information: { songName, artist, djName, startTime, roomName }
       const songInfo = JSON.parse(message);
+      console.log("Received song info:", songInfo);
       currentSong = songInfo;
-      console.log("Updated song info:", currentSong);
+      console.log("Updated current song:", currentSong);
+    }
+    
+    // NEW: Handle bot command responses
+    if (channel === "bot-commands" && message.trim() !== "") {
+      const commandData = JSON.parse(message);
+      console.log("Received bot command response:", commandData);
     }
   } catch (e) {
     console.error(`Error parsing message from ${channel}:`, e);
+    console.log("Raw message that failed to parse:", message);
   }
 });
 
@@ -285,35 +394,147 @@ client.on("messageCreate", async (message) => {
   // Ignore messages from bots
   if (message.author.bot) return;
   
-  // Handle !playing command - simplified version
+  // MODIFIED: Handle !playing command with real-time data request and bot status check
   if (message.content === "!playing") {
-    // Get the current DJ
-    const currentDJ = currentSong.djName || "No DJ";
-    const djsArray = getDJsArray();
-    
-    // Format current track information
-    const trackInfo = currentSong.songName && currentSong.artist 
-      ? `${currentSong.artist} - ${currentSong.songName}`
-      : "No track information available";
-    
-    // Create an embed for better formatting
-    const embed = new EmbedBuilder()
-      .setColor(0x0099FF)
-      .setTitle('🎧 Now Playing')
-      .setDescription(trackInfo)
-      .addFields({ name: 'Current DJ', value: currentDJ, inline: true });
-    
-    // If there are DJs in queue, add them to the embed
-    if (djsArray.length > 0) {
-      // Create a string with all DJs in queue (or just first few if many)
-      const displayDJs = djsArray.length <= 10 
-        ? djsArray.join('\n') 
-        : djsArray.slice(0, 10).join('\n') + `\n... and ${djsArray.length - 10} more`;
+    try {
+      // Send "typing" indicator to show bot is working
+      await message.channel.sendTyping();
       
-      embed.addFields({ name: 'DJ Queue', value: displayDJs });
+      console.log("Processing !playing command");
+      
+      // First, check if the turntable bot is online
+      console.log("Checking turntable bot status...");
+      const botIsOnline = await checkTurntableBotStatus();
+      
+      if (!botIsOnline) {
+        // Bot is offline, send appropriate message
+        const embed = new EmbedBuilder()
+          .setColor(0xFF0000) // Red color for offline
+          .setTitle('🤖 Turntable Bot Offline')
+          .setDescription('The turntable bot is currently offline or not responding.')
+          .addFields(
+            { name: 'Status', value: '🔴 Offline', inline: true },
+            { name: 'What does this mean?', value: 'The bot that manages the turntable room is not running or has lost connection.', inline: false },
+            { name: 'What can you do?', value: '• Check back later\n• Contact an admin if the issue persists\n• Visit the turntable room directly for current info', inline: false }
+          )
+          .setFooter({ text: 'Try again in a few minutes' });
+        
+        message.reply({ embeds: [embed] });
+        return;
+      }
+      
+      // Bot is online, proceed with normal flow
+      console.log("Turntable bot is online, requesting fresh data");
+      
+      // Store the current timestamp to detect new data
+      const originalTimestamp = currentSong.startTime || 0;
+      console.log("Original timestamp:", originalTimestamp);
+      
+      // Request fresh data from the turntable bot
+      const requestSent = await requestCurrentRoomInfo();
+      console.log("Room info request sent:", requestSent);
+      
+      if (requestSent) {
+        // Wait for updated data (with 5 second timeout)
+        console.log("Waiting for updated data...");
+        const dataUpdated = await waitForUpdatedData(originalTimestamp, 5000);
+        console.log("Data updated:", dataUpdated);
+        
+        if (!dataUpdated) {
+          console.log("No new data received within timeout, using cached data");
+        } else {
+          console.log("Received fresh data from turntable bot");
+        }
+      } else {
+        console.log("Failed to send room info request");
+      }
+      
+      // Log current song data for debugging
+      console.log("Current song data:", currentSong);
+      
+      // Get the current DJ
+      const currentDJ = currentSong.djName || "No DJ";
+      const djsArray = getDJsArray();
+      
+      // Filter out empty queue - if queue says "Empty" or similar, treat as empty array
+      const actualDjsArray = djsArray.filter(dj => dj && dj.trim() !== "" && dj !== "Queue is empty" && dj !== "Empty");
+      
+      // Format current track information
+      const trackInfo = currentSong.songName && currentSong.artist 
+        ? `${currentSong.artist} - ${currentSong.songName}`
+        : "No track information available";
+      
+      console.log("Formatted track info:", trackInfo);
+      console.log("Current DJ:", currentDJ);
+      
+      // Create an embed for better formatting
+      const embed = new EmbedBuilder()
+        .setColor(0x00FF00) // Green color for online
+        .setTitle('🎧 Now Playing')
+        .setDescription(trackInfo)
+        .addFields({ name: 'Current DJ', value: currentDJ, inline: true });
+      
+      // Add DJs currently on decks if available
+      if (currentSong.djsOnDecks && Array.isArray(currentSong.djsOnDecks)) {
+        if (currentSong.djsOnDecks.length > 0) {
+          const displayDjsOnDecks = currentSong.djsOnDecks.join(', ');
+          embed.addFields({ 
+            name: `DJs on Decks (${currentSong.djsOnDecks.length})`, 
+            value: displayDjsOnDecks 
+          });
+        }
+      }
+      
+      // Always show DJ Queue section, even if empty
+      if (actualDjsArray.length > 0) {
+        // Create a string with all DJs in queue (or just first few if many)
+        const displayDJs = actualDjsArray.length <= 10 
+          ? actualDjsArray.join('\n') 
+          : actualDjsArray.slice(0, 10).join('\n') + `\n... and ${actualDjsArray.length - 10} more`;
+        
+        embed.addFields({ name: `DJ Queue (${actualDjsArray.length})`, value: displayDJs });
+      } else {
+        // Show empty queue
+        embed.addFields({ name: `DJ Queue (0)`, value: 'Queue is empty' });
+      }
+      
+      // Add audience information if available
+      if (currentSong.audience && Array.isArray(currentSong.audience)) {
+        if (currentSong.audience.length > 0) {
+          // Create a string with all audience members (or just first few if many)
+          const displayAudience = currentSong.audience.length <= 15
+            ? currentSong.audience.join(', ')
+            : currentSong.audience.slice(0, 15).join(', ') + ` ... and ${currentSong.audience.length - 15} more`;
+          
+          embed.addFields({ 
+            name: `Audience (${currentSong.audience.length})`, 
+            value: displayAudience 
+          });
+        } else {
+          embed.addFields({ 
+            name: 'Audience', 
+            value: 'No one in audience' 
+          });
+        }
+      }
+      
+      // Add turntable bot status at the bottom
+      embed.addFields({ name: 'Turntable Bot', value: '🟢 Online', inline: true });
+      
+      message.reply({ embeds: [embed] });
+      
+    } catch (error) {
+      console.error('Error in !playing command:', error);
+      
+      // Send error embed
+      const errorEmbed = new EmbedBuilder()
+        .setColor(0xFF0000)
+        .setTitle('❌ Error')
+        .setDescription('Sorry, there was an error getting the current playing information.')
+        .addFields({ name: 'Error Details', value: 'Check the console for more information.' });
+      
+      message.reply({ embeds: [errorEmbed] });
     }
-    
-    message.reply({ embeds: [embed] });
   }
   
   // Command to show the First Friday DJ schedule
@@ -409,27 +630,25 @@ client.on("messageCreate", async (message) => {
     }
   }
   
-  // Command to list upcoming First Fridays
-  if (message.content === "!firstfridays") {
+  // Command to list upcoming events (changed from firstfridays)
+  if (message.content === "!events") {
     const embed = new EmbedBuilder()
       .setColor(0xFFA500)
-      .setTitle('🎧 Upcoming First Friday Events')
-      .setDescription('Here are the next 6 First Friday events:')
-      .setFooter({ text: 'DJ Radio Scheduler' })
-      .setTimestamp();
+      .setTitle('🎧 Upcoming Events')
+      .setDescription('Here are the next 6 events:');
     
     // Generate the next 6 first Fridays
     const fridays = getUpcomingFirstFridays(6);
     
     // Add each date to the embed
     fridays.forEach((friday, index) => {
-      embed.addFields({ name: `First Friday #${index + 1}`, value: formatDate(friday), inline: true });
+      embed.addFields({ name: `Event #${index + 1}`, value: formatDate(friday), inline: true });
     });
     
     // Add instructions
     embed.addFields({
       name: 'How to Sign Up',
-      value: 'Use `!djtimes` to see the schedule for the next First Friday\nUse `!signup <slot_number> <timezone>` to sign up'
+      value: 'Use `!djtimes` to see the schedule for the next event\nUse `!signup <slot_number> <timezone>` to sign up'
     });
     
     message.reply({ embeds: [embed] });

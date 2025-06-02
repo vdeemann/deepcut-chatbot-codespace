@@ -1,5 +1,9 @@
 # DJ Queue Bot
 
+![Turntable.fm DJ Queue Bot in Action](./assets/turntable-room-screenshot.png)
+
+*The DJ Queue Bot managing a live turntable.fm room with automatic queue enforcement and real-time notifications*
+
 A sophisticated Turntable.fm bot for managing DJ queues in music rooms with automatic queue management, fair play enforcement, and real-time updates.
 
 ## 🎵 Overview

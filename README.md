@@ -15,15 +15,16 @@ The DJ Queue Bot provides an automated queue management system for Turntable.fm 
 - **Persistent Queue**: Users remain in queue even when stepping down from decks
 
 ### ⚡ Real-Time Features
-- **Live Queue Updates**: Publishes queue status to Redis every 10 seconds
+- **Event-Driven Updates**: Publishes queue status only when changes occur (no constant polling)
 - **Song Tracking**: Broadcasts current song information for external integrations
 - **Instant Notifications**: Real-time feedback for all queue operations
 - **Auto-Sync**: Synchronizes with current DJ booth state
+- **Bot Status Monitoring**: Discord integration includes bot health checks
 
 ### 🛡️ Advanced Controls
 - **Admin Override System**: Comprehensive admin controls for queue management
 - **Queue Locking**: Prevents unauthorized queue modifications
-- **Wait Time Management**: Configurable cooldown periods between DJ turns
+- **Wait Time Management**: 1-minute cooldown periods between DJ turns in strict mode
 - **Graceful User Handling**: Manages user disconnections and refreshes intelligently
 
 ## 📋 Queue Rules & Behavior
@@ -40,14 +41,24 @@ The DJ Queue Bot provides an automated queue management system for Turntable.fm 
 - **1-minute cooldown** before rejoining decks
 - Automatic enforcement to ensure fairness
 - Users remain in queue during cooldown
+- Private message notifications when cooldown expires
 
 ### User Lifecycle Management
 
 1. **Joining**: Users automatically added to queue when they get on decks
 2. **Playing**: Song count tracked per DJ turn
-3. **Cooldown**: 1-minute wait period in strict mode
+3. **Cooldown**: 1-minute wait period in strict mode with private notifications
 4. **Rejoining**: Can rejoin queue after cooldown expires
 5. **Leaving**: 30-second grace period for page refreshes
+
+### Welcome System
+
+**Smart Welcome Messages**: All users receive personalized welcome messages regardless of queue status:
+
+- **Queue Enabled**: Information about queue system and available commands
+- **Queue Disabled**: Simple welcome with basic DJ instructions
+- **Admin Users**: Additional information about admin commands
+- **Returning Users**: Simplified welcome for users who refresh/rejoin
 
 ## 🎮 Commands Reference
 
@@ -57,7 +68,7 @@ The DJ Queue Bot provides an automated queue management system for Turntable.fm 
 |---------|-------------|
 | `/q` | View the current DJ queue |
 | `/a` | Add yourself to the DJ queue |
-| `/r` | Remove yourself from the DJ queue |
+| `/r` | Remove yourself from the DJ queue (after current song) |
 | `/queuestatus` | Show complete system status with wait times |
 | `/usercommands` | Display all available user commands |
 
@@ -74,7 +85,7 @@ The DJ Queue Bot provides an automated queue management system for Turntable.fm 
 | `/shutdown` | Gracefully shutdown the bot |
 | `/@a [username]` | Add specific user to queue |
 | `/@r [username]` | Remove specific user from queue |
-| `/@commands` | Display admin command reference |
+| `/admincommands` | Display admin command reference |
 
 ## 🚀 Installation & Setup
 
@@ -132,10 +143,16 @@ ADMIN_USERNAME_3=admin_username_3
 
 The bot provides real-time data through Redis channels for external integrations and includes a companion Discord bot for enhanced functionality.
 
+### Redis Architecture
+
+**Separate Connections**: Uses dedicated Redis connections for publishing and subscribing to prevent connection mode conflicts.
+
+**Event-Driven Publishing**: Queue and song data is published only when actual changes occur, eliminating unnecessary network traffic.
+
 ### Redis Channels
 
 #### Channel 1: Queue Status (`channel-1`)
-Published every 10 seconds with current queue state:
+Published when queue changes occur:
 
 ```json
 {
@@ -146,10 +163,10 @@ Published every 10 seconds with current queue state:
 
 **Special States:**
 - `"DJs": "disabled"` - Queue system is disabled
-- `"DJs": "Empty"` - No users in queue
+- `"DJs": "Queue is empty"` - No users in queue
 
 #### Channel 2: Song Information (`channel-2`)
-Published on every new song:
+Published on every new song and when requested:
 
 ```json
 {
@@ -157,22 +174,36 @@ Published on every new song:
   "artist": "Artist Name", 
   "djName": "DJ Username",
   "startTime": 1683842567890,
-  "roomName": "Room Name"
+  "roomName": "Room Name",
+  "audience": ["listener1", "listener2"],
+  "djsOnDecks": ["dj1", "dj2", "dj3"]
+}
+```
+
+#### Channel 3: Bot Commands (`bot-commands`)
+Used for communication between Discord and Turntable bots:
+
+```json
+{
+  "command": "getCurrentRoomInfo",
+  "timestamp": 1683842567890
 }
 ```
 
 ### Discord Bot Integration
 
-The companion Discord bot subscribes to both Redis channels and provides additional features for community engagement and event scheduling.
+The companion Discord bot subscribes to Redis channels and provides enhanced community features with real-time room monitoring.
 
 #### Discord Bot Features
 
 **🎵 Live Music Status:**
 - Real-time display of currently playing tracks
-- Current DJ information
-- Live queue status updates
+- Current DJ and all DJs on decks information
+- Live queue status with accurate counts
+- Room audience list with member counts
+- Bot health monitoring with online/offline status
 
-**📅 First Friday Event Management:**
+**📅 Event Management:**
 - Monthly DJ event scheduling system
 - Timezone-aware slot booking
 - Automated conflict prevention
@@ -182,15 +213,32 @@ The companion Discord bot subscribes to both Redis channels and provides additio
 
 | Command | Description |
 |---------|-------------|
-| `!playing` | Show currently playing track and DJ queue |
-| `!djtimes` | Display next First Friday DJ schedule |
-| `!djtimes YYYY MM` | Show specific month's First Friday schedule |
-| `!signup <slot> <timezone>` | Sign up for a First Friday DJ slot |
-| `!firstfridays` | List next 6 upcoming First Friday events |
+| `!playing` | Show currently playing track, DJs, queue, and audience |
+| `!djtimes` | Display next event DJ schedule |
+| `!djtimes YYYY MM` | Show specific month's event schedule |
+| `!signup <slot> <timezone>` | Sign up for an event DJ slot |
+| `!events` | List next 6 upcoming events |
 
-#### First Friday Event System
+#### Enhanced !playing Command
 
-The Discord bot includes a sophisticated event management system for monthly "First Friday" DJ events:
+The `!playing` command now provides comprehensive room information:
+
+**When Turntable Bot is Online:**
+- 🟢 Current song and artist
+- Current DJ (who played the specific song)
+- DJs on Decks (all current DJs with count)
+- DJ Queue with accurate count (shows "DJ Queue (0): Queue is empty" when empty)
+- Audience list with member count
+- Turntable bot status
+
+**When Turntable Bot is Offline:**
+- 🔴 Clear offline status message
+- Explanation of what the issue means
+- Helpful suggestions for users
+
+#### Event System
+
+The Discord bot includes an event management system for regular DJ events:
 
 **Features:**
 - **Automatic Date Calculation**: Finds the first Friday of each month
@@ -250,18 +298,23 @@ npm install discord.js
 
 ### Event-Driven Architecture
 - **Real-time event handling** for user actions
+- **Event-driven publishing** reduces network overhead
 - **Automatic state synchronization** with room events
 - **Graceful error recovery** and logging
 - **Clean shutdown procedures**
 
+### Redis Connection Management
+- **Separate Publisher/Subscriber connections** prevent mode conflicts
+- **Automatic reconnection** handling
+- **Error isolation** between publish and subscribe operations
+
 ### Configuration Constants
 
 ```javascript
-const QUEUE_SIZE_THRESHOLD = 6;    // When strict mode activates
-const QUEUE_FULL_SIZE = 5;         // "Full queue" announcement
-const DJ_WAIT_TIME = 60000;        // 1-minute cooldown (ms)
-const REFRESH_GRACE_PERIOD = 30000; // 30-second rejoin window
-const PUBLISH_INTERVAL = 10000;    // Redis update frequency
+const QUEUE_SIZE_THRESHOLD = 6;      // When strict mode activates
+const QUEUE_FULL_SIZE = 5;           // "Full queue" announcement
+const DJ_WAIT_TIME = 60000;          // 1-minute cooldown (ms)
+const REFRESH_GRACE_PERIOD = 30000;  // 30-second rejoin window
 ```
 
 ## 🎛️ Advanced Features
@@ -270,16 +323,23 @@ const PUBLISH_INTERVAL = 10000;    // Redis update frequency
 - **Refresh Detection**: Distinguishes between disconnects and page refreshes
 - **Grace Period Handling**: 30-second window for users to rejoin
 - **Automatic Queue Maintenance**: Removes users who leave permanently
+- **Intelligent Welcome System**: Contextual messages based on queue status
 
 ### Dynamic Enforcement
 - **Automatic Mode Switching**: Seamlessly transitions between relaxed/strict modes
 - **Real-time Announcements**: Keeps users informed of rule changes
-- **Intelligent Notifications**: Context-aware messaging
+- **Private Notifications**: Personal messages for cooldown periods
 
 ### Admin Tools
 - **Comprehensive Override**: Admins can bypass all restrictions
 - **Bulk Operations**: Clear queues, reset timers, force sync
 - **System Monitoring**: Real-time status reporting
+- **Dedicated Admin Commands**: Separate command set for administrators
+
+### Communication Systems
+- **Private Messaging**: Formatted PMs with consistent styling
+- **Public Announcements**: Clear room-wide notifications
+- **Status Updates**: Real-time feedback for all operations
 
 ## 🐛 Troubleshooting
 
@@ -300,10 +360,15 @@ const PUBLISH_INTERVAL = 10000;    // Redis update frequency
 - Check Redis connection for live updates
 - Restart bot if persistent issues occur
 
-**Users not being managed properly:**
-- Ensure bot has moderator privileges
-- Check for network connectivity issues
-- Verify room ID is correct in configuration
+**Discord bot showing "Unknown" data:**
+- Verify Redis connections between both bots
+- Check if turntable bot is online using `!playing`
+- Ensure both bots use the same Redis instance
+
+**Redis connection errors:**
+- Verify Redis URL format and credentials
+- Check network connectivity to Redis server
+- Ensure both publisher and subscriber connections are working
 
 ### Debug Mode
 Enable verbose logging by setting:
@@ -319,6 +384,7 @@ The bot provides comprehensive logging for:
 - Command execution and errors
 - Redis publish/subscribe activity
 - Admin actions and overrides
+- Discord bot integration status
 
 ## 🔒 Security Considerations
 
@@ -326,6 +392,7 @@ The bot provides comprehensive logging for:
 - **Command Validation**: Input sanitization and validation
 - **Rate Limiting**: Built-in cooldowns prevent spam
 - **Graceful Shutdown**: Clean termination on system signals
+- **Connection Security**: Separate Redis connections prevent interference
 
 ## 🤝 Contributing
 
@@ -335,6 +402,7 @@ When contributing to this project:
 3. Update documentation for new features
 4. Test edge cases thoroughly
 5. Follow existing code patterns
+6. Ensure Redis connection management is preserved
 
 ## 📄 License
 
@@ -346,6 +414,7 @@ For issues, questions, or feature requests:
 - Create an issue in the project repository
 - Check the troubleshooting section above
 - Review the Redis integration logs for connectivity issues
+- Use `/queuestatus` command for system diagnostics
 
 ---
 

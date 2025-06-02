@@ -11,7 +11,9 @@ const bot = new Bot(
   process.env.DEEPCUT_BOT_ROOMID,
 );
 const djQueue = new Queue();
-const redis = new Redis(process.env.UPSTASH_REDIS_AUTH);
+// Create separate Redis connections for publishing and subscribing
+const redisPublisher = new Redis(process.env.UPSTASH_REDIS_AUTH); // For publishing
+const redisSubscriber = new Redis(process.env.UPSTASH_REDIS_AUTH); // For subscribing
 
 // MODIFIED: Track recently played DJs with timestamps
 const recentlyPlayedDJs = new Map(); // Changed from Set to Map to store timestamps
@@ -60,6 +62,130 @@ function getTimestamp() {
 // Helper function to check if a user is an admin
 function isAdmin(username) {
   return adminUsers.includes(username);
+}
+
+// NEW: Function to handle room info requests and publish current data
+function handleGetCurrentRoomInfoRequest() {
+  console.log("Processing request for current room info");
+  
+  // Get current room information
+  bot.roomInfo(false, function (data) {
+    try {
+      console.log("Retrieved room info for Discord bot request");
+      console.log("Room data:", JSON.stringify(data, null, 2)); // Debug log
+      
+      if (!data || !data.room || !data.room.metadata) {
+        console.log("No room data available");
+        // Still publish something so Discord bot doesn't wait forever
+        const fallbackSongInfo = {
+          songName: "No room data",
+          artist: "Unknown", 
+          djName: "Unknown",
+          startTime: Date.now(),
+          roomName: "Unknown",
+          audience: [],
+          djsOnDecks: []
+        };
+        redisPublisher.publish("channel-2", JSON.stringify(fallbackSongInfo));
+        return;
+      }
+      
+      // Get current song info if available
+      let songInfo = {
+        songName: "No song playing",
+        artist: "Unknown", 
+        djName: "No DJ",
+        startTime: Date.now(),
+        roomName: data.room.name || "Unknown",
+        audience: [],
+        djsOnDecks: []
+      };
+      
+      console.log("Current song data:", data.room.metadata.current_song); // Debug log
+      
+      // If there's a current song playing
+      if (data.room.metadata.current_song && data.room.metadata.current_song.metadata) {
+        const currentSong = data.room.metadata.current_song;
+        songInfo = {
+          songName: currentSong.metadata.song || "Unknown song",
+          artist: currentSong.metadata.artist || "Unknown artist",
+          djName: currentSong.djname || "Unknown DJ",
+          startTime: currentSong.starttime || Date.now(),
+          roomName: data.room.name || "Unknown",
+          audience: [],
+          djsOnDecks: []
+        };
+        console.log("Processed song info:", songInfo); // Debug log
+      } else {
+        console.log("No current song found in room metadata");
+      }
+      
+      // Get DJs currently on decks and audience information
+      const users = data.users || [];
+      const currentDjIds = data.room.metadata.djs || [];
+      const audience = [];
+      const djsOnDecks = [];
+      
+      // First, get DJ names from their IDs
+      for (const djId of currentDjIds) {
+        for (const user of users) {
+          if (user.userid === djId) {
+            djsOnDecks.push(user.name);
+            break;
+          }
+        }
+      }
+      
+      // Then get audience (users who are not DJs)
+      for (const user of users) {
+        if (!currentDjIds.includes(user.userid)) {
+          audience.push(user.name);
+        }
+      }
+      
+      songInfo.audience = audience;
+      songInfo.djsOnDecks = djsOnDecks;
+      console.log("DJs on decks:", djsOnDecks); // Debug log
+      console.log("Audience members:", audience); // Debug log
+      
+      // Publish updated song info to channel-2 using publisher connection
+      redisPublisher.publish("channel-2", JSON.stringify(songInfo))
+        .then(() => {
+          console.log("Published fresh song info to channel-2:", JSON.stringify(songInfo));
+        })
+        .catch(err => {
+          console.error("Redis publish error for fresh song info:", err);
+        });
+      
+      // Also publish queue info to channel-1 using publisher connection
+      const queueMessage = { 
+        DJs: djQueue.print(),
+        locked: queueLocked
+      };
+      
+      redisPublisher.publish("channel-1", JSON.stringify(queueMessage))
+        .then(() => {
+          console.log("Published fresh queue info to channel-1:", JSON.stringify(queueMessage));
+        })
+        .catch(err => {
+          console.error("Redis publish error for fresh queue info:", err);
+        });
+        
+    } catch (err) {
+      console.error("Error processing room info request:", err);
+      // Publish fallback data so Discord bot doesn't hang
+      const errorSongInfo = {
+        songName: "Error retrieving data",
+        artist: "Unknown", 
+        djName: "Unknown",
+        startTime: Date.now(),
+        roomName: "Unknown",
+        audience: [],
+        djsOnDecks: []
+      };
+      redisPublisher.publish("channel-2", JSON.stringify(errorSongInfo));
+    }
+  });
 }
 
 // MODIFIED: Function to check and update queue size enforcement
@@ -117,12 +243,18 @@ function addToRecentlyPlayed(username, userId) {
       // Remove from recently played list
       recentlyPlayedDJs.delete(username);
       
-      // Send notification to the room and PM to the DJ
-      bot.speak(`@${username} Your 1-minute wait time is up! You can now rejoin the decks.`);
+      // Send private message to the DJ instead of public announcement
+      bot.pm(
+        "══════════════════\n" +
+        "Your 1-minute wait time is up!\n" +
+        "You can now rejoin the decks.\n" +
+        ".\n.\n.\n.\n.\n" +
+        "Use /q to view queue, /a to join if removed, or /usercommands for more.\n" +
+        getTimestamp(),
+        userId
+      );
       
-      // Remove the PM notification as it's not needed - the chat announcement is sufficient
-      
-      console.log(`${username}'s cooldown period has ended, removed from recently played list`);
+      console.log(`${username}'s cooldown period has ended, sent PM notification`);
     }
   }, DJ_WAIT_TIME);
 }
@@ -150,14 +282,14 @@ function canDJPlayAgain(username) {
 
 // Queue publication functions
 function publishQueueToRedis() {
-  // Don't use mutex here to avoid potential deadlocks
+  // Only publish when there are actual changes, not constantly
   const message = { 
     DJs: djQueue.print(),
     locked: queueLocked
   };
-  redis.publish("channel-1", JSON.stringify(message))
+  redisPublisher.publish("channel-1", JSON.stringify(message))
     .then(() => {
-      console.log("Published %s to %s", JSON.stringify(message), "channel-1");
+      console.log("Published queue update to channel-1:", JSON.stringify(message));
     })
     .catch(err => {
       console.error("Redis publish error:", err);
@@ -165,24 +297,20 @@ function publishQueueToRedis() {
 }
 
 function updateQueuePublication() {
-  // Only publish if interval is active (indicates system is enabled)
-  if (publishIntervalId) {
-    publishQueueToRedis();
-  }
+  // Only publish when there are actual queue changes
+  publishQueueToRedis();
 }
 
 function startQueuePublication() {
   return mutex.acquire().then((release) => {
     try {
-      // Only start if not already running
-      if (!publishIntervalId) {
-        publishIntervalId = setInterval(publishQueueToRedis, PUBLISH_INTERVAL);
-        console.log("Queue publication started");
-        
-        // Publish immediately when starting
+      // Remove the automatic interval publishing
+      // Only publish when queue is enabled initially
+      if (queueEnabled) {
+        console.log("Queue publication ready (event-driven mode)");
         publishQueueToRedis();
       }
-      return Promise.resolve(); // Explicitly return a resolved promise
+      return Promise.resolve();
     } finally {
       release();
     }
@@ -195,12 +323,9 @@ function startQueuePublication() {
 function stopQueuePublication() {
   return mutex.acquire().then((release) => {
     try {
-      if (publishIntervalId) {
-        clearInterval(publishIntervalId);
-        publishIntervalId = null;
-        console.log("Queue publication stopped");
-      }
-      return Promise.resolve(); // Explicitly return a resolved promise
+      // No interval to clear anymore
+      console.log("Queue publication stopped");
+      return Promise.resolve();
     } finally {
       release();
     }
@@ -381,7 +506,7 @@ function handleAdminCommand(command, username, targetUsername = null) {
                     DJs: "disabled",
                     locked: false
                   };
-                  return redis.publish("channel-1", JSON.stringify(disabledMessage))
+                  return redisPublisher.publish("channel-1", JSON.stringify(disabledMessage))
                     .then(() => {
                       console.log("Published disabled status to channel-1:", JSON.stringify(disabledMessage));
                       release(); // Release mutex before stopping publication
@@ -570,7 +695,7 @@ function handleQueueCommand(command, username) {
             
             speakPromise = speakAsync(queueMessage)
               .then(() => {
-                // Only update publication, don't try to start it here
+                // Publish queue update only when there's an actual change
                 publishQueueToRedis();
                 
                 // MODIFIED: Check if we need to enforce one song per DJ
@@ -594,9 +719,9 @@ function handleQueueCommand(command, username) {
             djSongCounts.delete(username);
             // Note: We don't remove from recentlyPlayedDJs here so they still need to wait if they've played
             
-            speakPromise = speakAsync(`@${username} will be removed from the live DJ queue.`)
+            speakPromise = speakAsync(`@${username} will be removed from the live DJ queue after their song has played.`)
               .then(() => {
-                // Only update publication, don't try to start it here
+                // Publish queue update only when there's an actual change
                 publishQueueToRedis();
                 
                 // MODIFIED: Update queue size enforcement
@@ -632,7 +757,7 @@ function handleQueueStatusCommand(username) {
       statusMessage += `• Queue System: ${queueEnabled ? "ENABLED" : "DISABLED"}\n`;
       statusMessage += `• Queue Lock: ${queueLocked ? "LOCKED (admin only)" : "UNLOCKED"}\n`;
       statusMessage += `• Current Queue: ${djQueue.isEmpty() ? "Empty" : djQueue.print()}\n`;
-      statusMessage += `• Live Updates: ${publishIntervalId ? "ACTIVE" : "INACTIVE"}\n`;
+      statusMessage += `• Live Updates: ${queueEnabled ? "EVENT-DRIVEN" : "INACTIVE"}\n`;
       
       // MODIFIED: Add queue size enforcement status
       statusMessage += `• One Song Per DJ: ${enforceOneSongPerDJ ? "ENABLED (6+ in queue)" : "DISABLED"}\n`;
@@ -726,6 +851,45 @@ function handleUserCommandsDisplay(username) {
     }
   });
 }
+
+// NEW: Subscribe to bot-commands channel to handle requests from Discord bot
+redisSubscriber.subscribe("bot-commands", (err, count) => {
+  if (err) {
+    console.error("Failed to subscribe to bot-commands:", err.message);
+  } else {
+    console.log(`Subscribed to bot-commands channel successfully!`);
+  }
+});
+
+// NEW: Handle bot command messages
+redisSubscriber.on("message", (channel, message) => {
+  if (channel === "bot-commands") {
+    try {
+      const commandData = JSON.parse(message);
+      console.log("Received bot command:", commandData);
+      
+      if (commandData.command === "getCurrentRoomInfo") {
+        handleGetCurrentRoomInfoRequest();
+      } else if (commandData.command === "ping") {
+        // Respond to ping with pong to indicate bot is online
+        console.log("Received ping, sending pong response");
+        redisPublisher.publish("bot-commands", JSON.stringify({
+          command: "pong",
+          timestamp: Date.now(),
+          botStatus: "online"
+        }))
+        .then(() => {
+          console.log("Sent pong response");
+        })
+        .catch(err => {
+          console.error("Error sending pong response:", err);
+        });
+      }
+    } catch (e) {
+      console.error("Error parsing bot command:", e);
+    }
+  }
+});
 
 // Handle chat commands - critical fixes to make commands work
 bot.on("speak", function (data) {
@@ -830,7 +994,7 @@ bot.on("speak", function (data) {
   }
   
   // Command to show all admin commands - only visible to admins
-  if (text === "/@commands" || text.endsWith(" /@commands")) {
+  if (text === "/admincommands" || text.endsWith(" /admincommands")) {
     console.log("Processing admin commands display request");
     if (isAdmin(username)) {
       handleAdminCommandsDisplay(username)
@@ -930,11 +1094,13 @@ bot.on("newsong", function (data) {
     artist: data.room.metadata.current_song.metadata.artist,
     djName: data.room.metadata.current_song.djname,
     startTime: Date.now(),
-    roomName: data.room.name
+    roomName: data.room.name,
+    audience: [], // Will be populated when specifically requested
+    djsOnDecks: [] // Will be populated when specifically requested
   };
   
-  // Publish to Redis channel-2
-  redis.publish("channel-2", JSON.stringify(songInfo))
+  // Publish to Redis channel-2 using publisher connection
+  redisPublisher.publish("channel-2", JSON.stringify(songInfo))
     .then(() => {
       console.log("Published song info to channel-2:", JSON.stringify(songInfo));
     })
@@ -985,34 +1151,60 @@ bot.on("registered", function (data) {
       bot.speak(`Welcome to the room, @${user.name}! 🎵`);
     }
     
-    // Only send queue system message if queue is enabled
-    if (!queueEnabled) return;
-    
+    // Send PM regardless of queue status
     // For refreshing users already in the queue, send a simpler message
-    if (isRefresh && djQueue.contains(user.name)) {
+    if (isRefresh && queueEnabled && djQueue.contains(user.name)) {
       bot.pm("══════════════════\n" +
-             "Welcome back!\n\nYou remain in the DJ queue.\n" + 
+             "Welcome back!\n" +
+             ".\n.\n.\n.\n.\n.\n.\n.\n.\n.\n" +
+             "You remain in the DJ queue.\n" + 
              getTimestamp(), user.userid);
       return; // Don't send the longer welcome message
     }
     
-    // Send detailed welcome message for new users or refreshing users not in queue
+    // Send welcome PM to all users (queue enabled or disabled)
     let message = "══════════════════\n";
     message += isRefresh ? 
-      "Welcome back! As a reminder, this room uses a DJ queue system.\n\n" :
-      "Welcome! This room uses a DJ queue system.\n\n";
+      "Welcome back! " :
+      "Welcome! ";
     
-    if (djQueue.size() >= QUEUE_FULL_SIZE) {
-      message += "The queue is currently full. Type /a to join the queue and wait for an open spot.\n\n";
+    if (queueEnabled) {
+      message += isRefresh ? 
+        "As a reminder, this room uses a DJ queue system.\n" :
+        "This room uses a DJ queue system.\n";
+      
+      message += ".\n.\n";
+      
+      if (djQueue.size() >= QUEUE_FULL_SIZE) {
+        message += "The queue is currently full. Type /a to join the queue and wait for an open spot.\n";
+      } else {
+        message += "Type /a to join the DJ queue or click \"Play Music\" to hop on the decks.\n";
+      }
+      
+      message += ".\n";
+      
+      if (enforceOneSongPerDJ) {
+        message += "Queue has 6+ people so DJs are limited to one song per turn with a 1-minute wait between turns.\n";
+      }
+      
+      if (isAdmin(user.name)) {
+        message += "Use /q to see the current queue, /usercommands for user commands, and /admincommands for admin commands.\n" + getTimestamp();
+      } else {
+        message += "Use /q to see the current queue and /usercommands for all available commands.\n" + getTimestamp();
+      }
     } else {
-      message += "Type /a to join the DJ queue or click \"Play Music\" to hop on the decks.\n\n";
+      // Queue is disabled - simple welcome message
+      message += "Thanks for joining us!\n";
+      message += ".\n.\n.\n";
+      message += "Click \"Play Music\" to hop on the decks and start DJing.\n";
+      message += ".\n.\n";
+      
+      if (isAdmin(user.name)) {
+        message += "Use /usercommands for user and /admincommands for admin commands.\n" + getTimestamp();
+      } else {
+        message += "Use /usercommands to see available commands.\n" + getTimestamp();
+      }
     }
-    
-    if (enforceOneSongPerDJ) {
-      message += "Queue has 6+ people so DJs are limited to one song per turn with a 1-minute wait between turns.\n\n";
-    }
-    
-    message += "Use /q to see the current queue and /usercommands for all available commands.\n" + getTimestamp();
     
     bot.pm(message, user.userid);
   }, 2000); // Delay to ensure user is fully loaded
@@ -1134,15 +1326,11 @@ bot.on("add_dj", function (data) {
           bot.speak(`DJ queue is now FULL (${QUEUE_FULL_SIZE} DJs). New users should type /a to join the queue and wait for an open spot.`);
         }
         
-        // Send them a PM explaining the system
+        // MODIFIED: Send them a PM explaining the system with new format
         let message = "══════════════════\n" +
-                     "You've been automatically added to the DJ queue!\n\n";
-        
-        if (enforceOneSongPerDJ) {
-          message += "Queue has 6+ people, so you'll be limited to ONE song per turn. After your song, you'll need to wait 1 minute before rejoining the decks but will remain in the queue.\n\n";
-        }
-        
-        message += "Use /q to see the queue, /a to join if removed, /r to leave the queue.\n" + getTimestamp();
+                     "You've been automatically added to the DJ queue!\n" +
+                     ".\n.\n.\n.\n.\n.\n.\n" +
+                     "Use /q to see the queue, /a to join if removed, /r to leave the queue.\n" + getTimestamp();
         
         bot.pm(message, user.userid);
       } else {

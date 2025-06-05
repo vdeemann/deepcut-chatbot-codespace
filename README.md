@@ -41,22 +41,26 @@ Automatically manages DJ queues in Turntable.fm rooms, ensuring everyone gets a 
 ## 🎮 Commands
 
 ### User Commands
-- `/q` - View current queue
-- `/a` - Add yourself to queue  
-- `/r` - Remove yourself from queue
-- `/queuestatus` - Show system status
-- `/usercommands` - Show all user commands
+| Command | Description |
+|---------|-------------|
+| `/q` | View current queue |
+| `/a` | Add yourself to queue |
+| `/r` | Remove yourself from queue |
+| `/queuestatus` | Show system status |
+| `/usercommands` | Show all user commands |
 
 ### Admin Commands
-- `/enablequeue` - Enable queue system
-- `/disablequeue` - Disable queue system
-- `/syncqueue` - Sync with current DJs
-- `/lockqueue` - Toggle queue lock
-- `/clearqueue` - Clear all entries
-- `/resetturns` - Reset all cooldowns
-- `/@a [user]` - Add specific user
-- `/@r [user]` - Remove specific user
-- `/admincommands` - Show all admin commands
+| Command | Description |
+|---------|-------------|
+| `/enablequeue` | Enable queue system |
+| `/disablequeue` | Disable queue system |
+| `/syncqueue` | Sync with current DJs |
+| `/lockqueue` | Toggle queue lock |
+| `/clearqueue` | Clear all entries |
+| `/resetturns` | Reset all cooldowns |
+| `/@a [user]` | Add specific user |
+| `/@r [user]` | Remove specific user |
+| `/admincommands` | Show all admin commands |
 
 ## 🚀 Quick Start
 
@@ -104,6 +108,7 @@ ENABLE_REDIS=true node deepcutBot.js
 - Real-time data publishing
 - External integration support
 - Queue and song data channels
+- **Discord bot integration** for enhanced functionality
 
 ### Data Channels
 **Queue Status (`channel-1`):**
@@ -120,6 +125,48 @@ ENABLE_REDIS=true node deepcutBot.js
   "audience": ["listener1", "listener2"],
   "djsOnDecks": ["dj1", "dj2"]
 }
+```
+
+**Bot Commands (`bot-commands`):**
+- `getCurrentRoomInfo` - Triggers fresh room data
+- `ping/pong` - Health check system
+
+## 🤖 Discord Bot Integration
+
+When Redis is enabled, the included Discord bot provides real-time turntable.fm room information and DJ event scheduling.
+
+### Discord Features
+- **Live Room Status** - Real-time song, DJ, queue, and audience information
+- **Bot Health Monitoring** - Shows online/offline status of turntable bot
+- **Event Scheduling** - Monthly DJ event system with timezone support
+- **Automated Updates** - Requests fresh data from turntable bot on demand
+
+### Discord Commands
+| Command | Description |
+|---------|-------------|
+| `!playing` | Show current song, DJs, queue, and audience with bot status |
+| `!djtimes` | Display next event DJ schedule |
+| `!djtimes YYYY MM` | Show specific month's event schedule |
+| `!signup <slot> <timezone>` | Sign up for an event DJ slot |
+| `!events` | List next 6 upcoming events |
+
+### Event System
+- **Monthly Events** - Automated first Friday of each month scheduling
+- **Time Slots** - 7 available slots: 9am, 10am, 11am, 1pm, 2pm, 3pm, 4pm (UTC)
+- **Timezone Support** - Converts times to DJ's local timezone
+- **Smart Constraints** - Prevents scheduling during unreasonable hours
+- **Anti-Conflict** - One slot per DJ per event
+
+### Setup Discord Bot
+```bash
+# Install additional dependency
+npm install discord.js
+
+# Add to environment
+DISCORD_TOKEN=your_discord_bot_token
+
+# Run Discord bot (separate terminal)
+node discordBot.js
 ```
 
 ## 🔧 Configuration

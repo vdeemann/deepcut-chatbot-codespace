@@ -67,6 +67,10 @@ const djSongCounts = new Map(); // Track how many songs each DJ has played in th
 let enforceOneSongPerDJ = false; // Dynamic flag based on queue size
 const DJ_WAIT_TIME = 60000; // 1 minute wait time
 
+// NEW: Track song timing to detect skips
+const songStartTimes = new Map(); // djName -> { startTime, minDuration }
+const MIN_SONG_DURATION = 30000; // 30 seconds - if song ends before this, it was likely skipped
+
 // Admin usernames
 const adminUsers = [
   process.env.ADMIN_USERNAME_1,
@@ -94,6 +98,35 @@ function getTimestamp() {
 // Helper function to check if a user is an admin
 function isAdmin(username) {
   return adminUsers.includes(username);
+}
+
+// NEW: Function to detect if a song was skipped
+function wasSongSkipped(djName) {
+  if (!songStartTimes.has(djName)) {
+    return false; // No timing data, assume not skipped
+  }
+  
+  const songData = songStartTimes.get(djName);
+  const songDuration = Date.now() - songData.startTime;
+  
+  console.log(`Song duration for ${djName}: ${songDuration}ms (min: ${songData.minDuration}ms)`);
+  
+  // If song played for less than the minimum duration, it was likely skipped
+  return songDuration < songData.minDuration;
+}
+
+// NEW: Function to track when a song starts
+function trackSongStart(djName, expectedDuration = null) {
+  const startTime = Date.now();
+  // Use either the expected duration or minimum duration, whichever is smaller
+  const minDuration = expectedDuration ? Math.min(expectedDuration * 0.8, MIN_SONG_DURATION) : MIN_SONG_DURATION;
+  
+  songStartTimes.set(djName, {
+    startTime: startTime,
+    minDuration: minDuration
+  });
+  
+  console.log(`Tracking song start for ${djName} at ${startTime}, min duration: ${minDuration}ms`);
 }
 
 // Optional Redis publishing functions
@@ -260,7 +293,7 @@ function getDJSongCount(username) {
 function addToRecentlyPlayed(username, userId) {
   const now = Date.now();
   recentlyPlayedDJs.set(username, now);
-  console.log(`Added ${username} to recently played list with timestamp ${now}`);
+  console.log(`Added ${username} to recently played list with timestamp ${now} (must wait regardless of queue size changes)`);
   
   // Set a timeout to alert the DJ when their cooldown period is up
   setTimeout(() => {
@@ -395,8 +428,8 @@ if (redisEnabled && redisSubscriber) {
 bot.removeAllListeners();
 
 // Handle getting current DJs and adding them to the queue
-function handleSyncDjBooth(username) {
-  console.log(`Admin ${username} executed /syncdjbooth command`);
+function handleSyncQueue(username) {
+  console.log(`Admin ${username} executed /syncqueue command`);
   
   // Only allow admins to perform this action
   if (!isAdmin(username)) {
@@ -413,7 +446,7 @@ function handleSyncDjBooth(username) {
     // Use roomInfo to get current DJs in the booth
     bot.roomInfo(false, function (data) {
       try {
-        console.log("Retrieved room info for /syncdjbooth");
+        console.log("Retrieved room info for /syncqueue");
         
         // Check if data and required properties exist
         if (!data || !data.room || !data.room.metadata || !data.room.metadata.djs) {
@@ -425,6 +458,7 @@ function handleSyncDjBooth(username) {
         // Access the DJs array directly from room metadata
         const currentDjIds = data.room.metadata.djs || [];
         const users = data.users || [];
+        const currentSong = data.room.metadata.current_song;
         let addedCount = 0;
         
         console.log(`Found ${currentDjIds.length} DJ IDs in the booth metadata`);
@@ -438,31 +472,61 @@ function handleSyncDjBooth(username) {
           return;
         }
         
-        // Find DJ names from user IDs in the booth and add them to the queue
+        // Find DJ names from user IDs
+        const djsOnDecks = [];
         for (let i = 0; i < currentDjIds.length; i++) {
           const djId = currentDjIds[i];
-          
-          let djName = null;
-          
-          // Find the username associated with this ID
-          for (let j = 0; j < users.length; j++) {
-            if (users[j].userid === djId) {
-              djName = users[j].name;
-              break;
-            }
-          }
-          
-          if (djName) {
-            // Add DJ to the queue
-            djQueue.enqueue(djName);
-            // Initialize song count for this DJ
-            resetDJSongCount(djName);
-            addedCount++;
-            console.log(`Added DJ to queue: ${djName} (ID: ${djId})`);
-          } else {
-            console.log(`Could not find username for DJ ID: ${djId}`);
+          const user = users.find(u => u.userid === djId);
+          if (user) {
+            djsOnDecks.push(user.name);
           }
         }
+        
+        console.log(`DJs on decks (left to right): ${djsOnDecks.join(', ')}`);
+        
+        // Determine the main DJ and proper queue order
+        let queueOrder = [];
+        
+        if (currentSong && currentSong.djid && currentSong.djname) {
+          const mainDJ = currentSong.djname;
+          const mainDJIndex = currentDjIds.indexOf(currentSong.djid);
+          
+          console.log(`Main DJ: ${mainDJ} (position ${mainDJIndex})`);
+          
+          if (mainDJIndex !== -1 && djsOnDecks.includes(mainDJ)) {
+            // Start with the main DJ
+            queueOrder.push(mainDJ);
+            
+            // Add remaining DJs in rotation order (left to right from main DJ)
+            for (let i = 1; i < currentDjIds.length; i++) {
+              const nextIndex = (mainDJIndex + i) % currentDjIds.length;
+              const nextDJId = currentDjIds[nextIndex];
+              const nextUser = users.find(u => u.userid === nextDJId);
+              
+              if (nextUser && !queueOrder.includes(nextUser.name)) {
+                queueOrder.push(nextUser.name);
+              }
+            }
+            
+            console.log(`Queue order (main DJ first, then rotation): ${queueOrder.join(', ')}`);
+          } else {
+            // Fallback: main DJ not found or not on decks, use deck order
+            queueOrder = djsOnDecks;
+            console.log(`Fallback: using deck order: ${queueOrder.join(', ')}`);
+          }
+        } else {
+          // No current song, use deck order
+          queueOrder = djsOnDecks;
+          console.log(`No current song, using deck order: ${queueOrder.join(', ')}`);
+        }
+        
+        // Add DJs to queue in the determined order
+        queueOrder.forEach(djName => {
+          djQueue.enqueue(djName);
+          resetDJSongCount(djName);
+          addedCount++;
+          console.log(`Added DJ to queue: ${djName}`);
+        });
         
         // Always publish the queue since we cleared it
         publishQueueToRedis();
@@ -471,10 +535,10 @@ function handleSyncDjBooth(username) {
         updateQueueSizeEnforcement();
         
         // Build response message
-        let message = `DJ booth sync completed. `;
+        let message = `Queue sync completed. `;
         
         if (addedCount > 0) {
-          message += `Added ${addedCount} DJs to the queue. `;
+          message += `Added ${addedCount} DJs to the queue in rotation order. `;
         } else {
           message += `No DJs found to add to the queue. `;
         }
@@ -483,7 +547,7 @@ function handleSyncDjBooth(username) {
         
         // Speak the message and then resolve the Promise
         bot.speak(message);
-        console.log("syncdjbooth command completed successfully");
+        console.log("syncqueue command completed successfully");
         
         // Add a small delay to ensure the message is sent before resolving
         setTimeout(() => {
@@ -517,7 +581,7 @@ function handleAdminCommand(command, username, targetUsername = null) {
               speakPromise = speakAsync("Live DJ queue system is now ENABLED. Current DJs will be automatically added to the queue.")
                 .then(() => {
                   // Automatically sync current DJs when enabling
-                  return handleSyncDjBooth(username);
+                  return handleSyncQueue(username);
                 })
                 .then(() => {
                   // Check queue size and announce if one-song rule is in effect
@@ -775,41 +839,69 @@ function handleQueueCommand(command, username) {
             speakPromise = speakAsync(`@${username} The queue is currently locked. Only admins can modify it.`);
           } else if (djQueue.contains(username)) {
             djQueue.remove(username);
-            // Remove user from song counts tracking but NOT from recently played
+            // Remove user from song counts tracking but keep recently played cooldown
             djSongCounts.delete(username);
             
-            // Check if user is currently DJing and there are other DJs in queue (Fair Turn System)
+            // Check if user is currently DJing and apply cooldown if queue was 6+ when they started
             bot.roomInfo(false, function(roomData) {
               try {
                 const currentDjIds = roomData.room.metadata.djs || [];
                 const users = roomData.users || [];
+                const currentSong = roomData.room.metadata.current_song;
                 
                 // Find if this user is currently on decks
                 const userOnDecks = users.find(user => 
                   user.name === username && currentDjIds.includes(user.userid)
                 );
                 
-                if (userOnDecks && djQueue.size() > 0) {
-                  // Mark this DJ to be removed after their current song ends
-                  djsToRemoveAfterSong.set(username, {
-                    userId: userOnDecks.userid,
-                    reason: 'self_removal'
-                  });
-                  console.log(`Marked ${username} for removal after song (other DJs waiting)`);
+                if (userOnDecks) {
+                  // Check if they're the one currently playing
+                  const isCurrentlyPlaying = currentSong && currentSong.djname === username;
+                  
+                  if (isCurrentlyPlaying && enforceOneSongPerDJ) {
+                    // User is trying to exploit by leaving queue while playing when 6+ people
+                    // Apply immediate cooldown to prevent cutting in line
+                    addToRecentlyPlayed(username, userOnDecks.userid);
+                    console.log(`Applied immediate cooldown to ${username} for leaving queue while playing (6+ people) - prevents cutting exploitation`);
+                    
+                    // Mark for removal and inform about cooldown
+                    djsToRemoveAfterSong.set(username, {
+                      userId: userOnDecks.userid,
+                      reason: 'self_removal_with_cooldown'
+                    });
+                    
+                    bot.speak(`${username} will be removed from the queue and must wait 1 minute before rejoining (prevents cutting in line).`);
+                  } else if (djQueue.size() > 0) {
+                    // Normal removal without cooldown exploitation
+                    djsToRemoveAfterSong.set(username, {
+                      userId: userOnDecks.userid,
+                      reason: 'self_removal'
+                    });
+                    
+                    bot.speak(`${username} will be removed from the live DJ queue after their song has played.`);
+                  }
+                  
+                  console.log(`Marked ${username} for removal after song (exploitation prevention active)`);
+                } else {
+                  // User not currently on decks, just remove from queue
+                  bot.speak(`${username} removed from the live DJ queue.`);
                 }
               } catch (error) {
                 console.error("Error checking DJ status for removal:", error);
+                bot.speak(`${username} removed from the live DJ queue.`);
               }
             });
             
-            speakPromise = speakAsync(`@${username} will be removed from the live DJ queue after their song has played.`)
-              .then(() => {
-                // Publish queue update only when there's an actual change
-                publishQueueToRedis();
-                
-                // Update queue size enforcement
-                updateQueueSizeEnforcement();
-              });
+            // Note: We don't remove from recentlyPlayedDJs to prevent cooldown exploitation
+            console.log(`${username} removed from queue but cooldown preserved (if any) to prevent exploitation`);
+            
+            speakPromise = Promise.resolve().then(() => {
+              // Publish queue update only when there's an actual change
+              publishQueueToRedis();
+              
+              // Update queue size enforcement
+              updateQueueSizeEnforcement();
+            });
           } else {
             speakPromise = speakAsync(`You are not in the live DJ queue. @${username}`);
           }
@@ -839,12 +931,10 @@ function handleQueueStatusCommand(username) {
       let statusMessage = "DJ Queue System Status:\n";
       statusMessage += `• Queue System: ${queueEnabled ? "ENABLED" : "DISABLED"}\n`;
       statusMessage += `• Queue Lock: ${queueLocked ? "LOCKED (admin only)" : "UNLOCKED"}\n`;
-      statusMessage += `• Current Queue: ${djQueue.isEmpty() ? "Empty" : djQueue.print()}\n`;
       statusMessage += `• Live Updates: ${queueEnabled ? "EVENT-DRIVEN" : "INACTIVE"}\n`;
       statusMessage += `• Redis Integration: ${redisEnabled ? "ENABLED" : "DISABLED"}\n`;
-      
-      // Add queue size enforcement status
       statusMessage += `• One Song Per DJ: ${enforceOneSongPerDJ ? "ENABLED (6+ in queue)" : "DISABLED"}\n`;
+      statusMessage += `• Current Queue: ${djQueue.isEmpty() ? "Empty" : djQueue.print()}`;
       
       // Add recently played DJs with wait times
       if (recentlyPlayedDJs.size > 0) {
@@ -863,8 +953,6 @@ function handleQueueStatusCommand(username) {
         statusMessage += waitingDJs.join('\n');
         statusMessage += '\n';
       }
-      
-      statusMessage += "Use /q to view the queue, /a to add yourself, /r to remove yourself";
       
       return speakAsync(statusMessage);
     } catch (err) {
@@ -888,7 +976,7 @@ function handleAdminCommandsDisplay(username) {
 • /disablequeue - Disable the DJ queue system
 • /lockqueue - Toggle queue lock status (locked/unlocked)
 • /clearqueue - Clear all entries from the queue
-• /syncdjbooth - Add current DJs to the queue`;
+• /syncqueue - Add current DJs to the queue`;
 
       const commandsList2 = `• /resetturns - Reset all DJ wait times 
 • /shutdown - Shutdown the bot
@@ -1009,12 +1097,12 @@ bot.on("speak", function (data) {
     return;
   }
   
-  // Add handler for the syncdjbooth command
-  if (text === "/syncdjbooth" || text.endsWith(" /syncdjbooth")) {
-    console.log("Processing syncdjbooth command");
-    handleSyncDjBooth(username)
+  // Add handler for the syncqueue command
+  if (text === "/syncqueue" || text.endsWith(" /syncqueue")) {
+    console.log("Processing syncqueue command");
+    handleSyncQueue(username)
       .catch(err => {
-        console.error("Error in syncdjbooth command:", err);
+        console.error("Error in syncqueue command:", err);
         bot.speak(`@${username}: An error occurred while processing the command. Please try again later.`);
       });
     return;
@@ -1122,13 +1210,20 @@ bot.on("speak", function (data) {
   console.log(`Not a recognized command: "${text}"`);
 });
 
-// UPDATED: Handle new song events with complete audience and DJ data
+// UPDATED: Handle new song events with complete audience and DJ data + skip detection
 bot.on("newsong", function (data) {
   try {
     // Check if song data exists
     if (!data.room?.metadata?.current_song?.metadata) {
       console.log("No song metadata available");
       return;
+    }
+    
+    const currentDJ = data.room.metadata.current_song.djname;
+    
+    // NEW: Track when this song started for skip detection
+    if (currentDJ) {
+      trackSongStart(currentDJ);
     }
     
     // Get current room information to populate audience and DJs
@@ -1316,6 +1411,12 @@ bot.on("deregistered", function (data) {
       console.log(`Cleaned up removal tracking for ${user.name} (left room)`);
     }
     
+    // Clean up song timing tracking if user leaves
+    if (songStartTimes.has(user.name)) {
+      songStartTimes.delete(user.name);
+      console.log(`Cleaned up song timing for ${user.name} (left room)`);
+    }
+    
     // Announce that the user has left the room
     bot.speak(`@${user.name} has left the room.`);
     
@@ -1390,59 +1491,250 @@ bot.on("add_dj", function (data) {
     // If queue is disabled, allow anyone to DJ without restrictions
     if (!queueEnabled) return;
 
+    // Check if user is in cooldown period FIRST - regardless of current queue size
+    if (recentlyPlayedDJs.has(user.name)) {
+      const waitTime = canDJPlayAgain(user.name);
+      
+      // If waitTime is true, they've waited long enough
+      if (waitTime !== true) {
+        // They need to wait more time - remove them regardless of current queue enforcement
+        bot.remDj(user.userid);
+        bot.pm(
+          "══════════════════\n" +
+          `Wait ${waitTime} more seconds.\n` +
+          "Your cooldown persists regardless of queue size changes.\n" +
+          ".\n.\n.\n.\n.\n" +
+          "You can hop back on the decks when ready, /q to view queue, /r to leave queue, or /usercommands for more.\n" +
+          getTimestamp(),
+          user.userid
+        );
+        console.log(`${user.name} blocked from decks - cooldown active (${waitTime}s remaining) regardless of current queue size`);
+        return; // Exit early - don't process reordering for users in cooldown
+      } else {
+        console.log(`${user.name} cooldown has expired, allowing deck access`);
+      }
+    }
+
     mutex.acquire().then((release) => {
       try {
-        // When queue is enabled, automatically add DJs to the queue
-        if (!djQueue.contains(user.name)) {
-          // Automatically add them to the queue
-          djQueue.enqueue(user.name);
-          resetDJSongCount(user.name);
-          
-          console.log(`Automatically added ${user.name} to queue when they joined the decks`);
-          
-          // Announce to chat that they were added to the queue
-          bot.speak(`@${user.name} has been added to the DJ queue.`);
-          
-          // Update queue publication
-          publishQueueToRedis();
-          updateQueueSizeEnforcement();
-          
-          // Check if queue is now full
-          if (djQueue.size() === QUEUE_FULL_SIZE) {
-            bot.speak(`DJ queue is now FULL (${QUEUE_FULL_SIZE} DJs). New users should type /a to join the queue and wait for an open spot.`);
-          }
-          
-          // Send them a PM explaining the system
-          let message = "══════════════════\n" +
-                       "You've been automatically added to the DJ queue!\n" +
-                       ".\n.\n.\n.\n.\n.\n.\n" +
-                       "Use /q to see the queue, /a to join if removed, /r to leave the queue.\n" + getTimestamp();
-          
-          bot.pm(message, user.userid);
+        // When queue is enabled, check if we need to reorder based on deck position
+        if (djQueue.contains(user.name)) {
+          // User is already in queue, check if deck order needs reordering
+          setTimeout(() => {
+            bot.roomInfo(false, function(roomData) {
+              try {
+                const currentDjIds = roomData?.room?.metadata?.djs || [];
+                const users = roomData?.users || [];
+                const currentSong = roomData?.room?.metadata?.current_song;
+                
+                // Get current DJs on decks in deck order
+                const djsOnDecks = currentDjIds.map(id => {
+                  const djUser = users.find(u => u.userid === id);
+                  return djUser ? djUser.name : null;
+                }).filter(Boolean);
+                
+                console.log(`[ADD_DJ] ${user.name} rejoined decks`);
+                console.log(`[ADD_DJ] DJs on decks: ${djsOnDecks.join(', ')}`);
+                console.log(`[ADD_DJ] Current queue before reorder: ${djQueue.print()}`);
+                
+                // Always reorder queue when someone rejoins to match deck positions
+                if (djsOnDecks.length > 1) {
+                  console.log(`[ADD_DJ] Reordering queue to match deck positions`);
+                  
+                  // Preserve song counts and users not on decks
+                  const preservedSongCounts = new Map(djSongCounts);
+                  const queueArray = djQueue.print() ? djQueue.print().split(', ').map(name => name.trim()) : [];
+                  const usersNotOnDecks = queueArray.filter(name => !djsOnDecks.includes(name));
+                  
+                  // Clear and rebuild queue
+                  djQueue.clear();
+                  djSongCounts.clear();
+                  
+                  // Determine proper rotation order based on main DJ
+                  let queueOrder = [];
+                  
+                  if (currentSong && currentSong.djid && currentSong.djname) {
+                    const mainDJ = currentSong.djname;
+                    const mainDJIndex = currentDjIds.indexOf(currentSong.djid);
+                    
+                    if (mainDJIndex !== -1 && djsOnDecks.includes(mainDJ)) {
+                      // Start with main DJ
+                      queueOrder.push(mainDJ);
+                      
+                      // Add remaining DJs in rotation order (left to right from main DJ)
+                      for (let i = 1; i < currentDjIds.length; i++) {
+                        const nextIndex = (mainDJIndex + i) % currentDjIds.length;
+                        const nextDJId = currentDjIds[nextIndex];
+                        const nextUser = users.find(u => u.userid === nextDJId);
+                        
+                        if (nextUser && !queueOrder.includes(nextUser.name)) {
+                          queueOrder.push(nextUser.name);
+                        }
+                      }
+                    } else {
+                      // Fallback: use deck order
+                      queueOrder = djsOnDecks;
+                    }
+                  } else {
+                    // No current song, use deck order
+                    queueOrder = djsOnDecks;
+                  }
+                  
+                  // Add DJs on decks first (in rotation order)
+                  queueOrder.forEach(djName => {
+                    djQueue.enqueue(djName);
+                    djSongCounts.set(djName, preservedSongCounts.get(djName) || 0);
+                  });
+                  
+                  // Add users not on decks to end of queue
+                  usersNotOnDecks.forEach(djName => {
+                    djQueue.enqueue(djName);
+                    djSongCounts.set(djName, preservedSongCounts.get(djName) || 0);
+                  });
+                  
+                  publishQueueToRedis();
+                  
+                  console.log(`[ADD_DJ] Reordered queue: ${djQueue.print()}`);
+                  // Only announce reordering when someone successfully secures a deck spot
+                  bot.speak(`Queue reordered to match deck positions. Current rotation: ${djQueue.print()}`);
+                } else {
+                  // Only one DJ on decks, no reordering needed
+                  bot.speak(`${user.name} joined the decks! Current queue: ${djQueue.print()}`);
+                }
+              } catch (err) {
+                console.error("Error checking deck order:", err);
+                bot.speak(`${user.name} joined the decks! Current queue: ${djQueue.print()}`);
+              }
+            });
+          }, 1000); // Small delay to ensure deck position is updated
         } else {
-          // User is already in queue, so initialize or reset their song count
-          resetDJSongCount(user.name);
+          // User not in queue - add them and reorder if needed
+          setTimeout(() => {
+            bot.roomInfo(false, function(roomData) {
+              try {
+                const currentDjIds = roomData?.room?.metadata?.djs || [];
+                const users = roomData?.users || [];
+                const currentSong = roomData?.room?.metadata?.current_song;
+                
+                // Get current DJs on decks
+                const djsOnDecks = currentDjIds.map(id => {
+                  const djUser = users.find(u => u.userid === id);
+                  return djUser ? djUser.name : null;
+                }).filter(Boolean);
+                
+                console.log(`[ADD_DJ] ${user.name} joined decks (new to queue)`);
+                console.log(`[ADD_DJ] DJs on decks: ${djsOnDecks.join(', ')}`);
+                console.log(`[ADD_DJ] Current queue before adding: ${djQueue.print()}`);
+                
+                // If there are multiple DJs on decks, reorder entire queue
+                if (djsOnDecks.length > 1) {
+                  // Preserve song counts and existing queue members
+                  const preservedSongCounts = new Map(djSongCounts);
+                  const queueArray = djQueue.print() ? djQueue.print().split(', ').map(name => name.trim()) : [];
+                  const usersNotOnDecks = queueArray.filter(name => !djsOnDecks.includes(name));
+                  
+                  // Clear and rebuild queue
+                  djQueue.clear();
+                  djSongCounts.clear();
+                  
+                  // Determine proper rotation order
+                  let queueOrder = [];
+                  
+                  if (currentSong && currentSong.djid && currentSong.djname) {
+                    const mainDJ = currentSong.djname;
+                    const mainDJIndex = currentDjIds.indexOf(currentSong.djid);
+                    
+                    if (mainDJIndex !== -1 && djsOnDecks.includes(mainDJ)) {
+                      // Start with main DJ
+                      queueOrder.push(mainDJ);
+                      
+                      // Add remaining DJs in rotation order
+                      for (let i = 1; i < currentDjIds.length; i++) {
+                        const nextIndex = (mainDJIndex + i) % currentDjIds.length;
+                        const nextDJId = currentDjIds[nextIndex];
+                        const nextUser = users.find(u => u.userid === nextDJId);
+                        
+                        if (nextUser && !queueOrder.includes(nextUser.name)) {
+                          queueOrder.push(nextUser.name);
+                        }
+                      }
+                    } else {
+                      queueOrder = djsOnDecks;
+                    }
+                  } else {
+                    queueOrder = djsOnDecks;
+                  }
+                  
+                  // Add DJs on decks in rotation order
+                  queueOrder.forEach(djName => {
+                    djQueue.enqueue(djName);
+                    djSongCounts.set(djName, preservedSongCounts.get(djName) || 0);
+                  });
+                  
+                  // Add users not on decks to end
+                  usersNotOnDecks.forEach(djName => {
+                    djQueue.enqueue(djName);
+                    djSongCounts.set(djName, preservedSongCounts.get(djName) || 0);
+                  });
+                  
+                  publishQueueToRedis();
+                  updateQueueSizeEnforcement();
+                  
+                  console.log(`[ADD_DJ] Added ${user.name} and reordered queue: ${djQueue.print()}`);
+                  bot.speak(`${user.name} joined the decks! Queue reordered: ${djQueue.print()}`);
+                } else {
+                  // Only one DJ, just add to queue
+                  djQueue.enqueue(user.name);
+                  resetDJSongCount(user.name);
+                  publishQueueToRedis();
+                  updateQueueSizeEnforcement();
+                  
+                  bot.speak(`${user.name} has been added to the DJ queue.`);
+                }
+                
+                // Check if queue is now full
+                if (djQueue.size() === QUEUE_FULL_SIZE) {
+                  bot.speak(`DJ queue is now FULL (${QUEUE_FULL_SIZE} DJs). New users should type /a to join the queue and wait for an open spot.`);
+                }
+                
+                // Send PM
+                let message = "══════════════════\n" +
+                             "You've been automatically added to the DJ queue!\n" +
+                             ".\n.\n.\n.\n.\n.\n.\n" +
+                             "Use /q to see the queue, /a to join if removed, /r to leave the queue.\n" + getTimestamp();
+                
+                bot.pm(message, user.userid);
+              } catch (err) {
+                console.error("Error adding new DJ:", err);
+                // Fallback: simple add
+                djQueue.enqueue(user.name);
+                resetDJSongCount(user.name);
+                publishQueueToRedis();
+                bot.speak(`${user.name} has been added to the DJ queue.`);
+              }
+            });
+          }, 1000);
+        }
+        
+        // Check if user is in the recently played list and in cooling period
+        if (recentlyPlayedDJs.has(user.name)) {
+          const waitTime = canDJPlayAgain(user.name);
           
-          // Check if user is in the recently played list and in cooling period
-          if (recentlyPlayedDJs.has(user.name)) {
-            const waitTime = canDJPlayAgain(user.name);
-            
-            // If waitTime is true, they've waited long enough
-            if (waitTime === true) {
-              // Allow them to DJ and reset their song count
-              resetDJSongCount(user.name);
-            } else {
-              // They need to wait more time
-              bot.remDj(user.userid);
-              bot.pm(
-                "══════════════════\n" +
-                `Wait ${waitTime} more seconds.\n` +
-                ".\n.\n.\n.\n.\n.\n" +
-                "You can hop back on the decks when ready, /q to view queue, /r to leave queue, or /usercommands for more.\n" +
-                getTimestamp(),
-                user.userid
-              );
-            }
+          // If waitTime is true, they've waited long enough
+          if (waitTime === true) {
+            // Allow them to DJ and reset their song count
+            resetDJSongCount(user.name);
+          } else {
+            // They need to wait more time
+            bot.remDj(user.userid);
+            bot.pm(
+              "══════════════════\n" +
+              `Wait ${waitTime} more seconds.\n` +
+              ".\n.\n.\n.\n.\n.\n" +
+              "You can hop back on the decks when ready, /q to view queue, /r to leave queue, or /usercommands for more.\n" +
+              getTimestamp(),
+              user.userid
+            );
           }
         }
       } finally {
@@ -1463,11 +1755,105 @@ bot.on("rem_dj", function (data) {
     // Only manage queue if it's enabled
     if (!queueEnabled) return;
     
+    // Clean up song timing tracking when DJ leaves booth
+    if (songStartTimes.has(user.name)) {
+      songStartTimes.delete(user.name);
+      console.log(`Cleaned up song timing for ${user.name} (left booth)`);
+    }
+    
     mutex.acquire().then((release) => {
       try {
         // If the user is in the queue, keep them in the queue when they step down
         if (djQueue.contains(user.name)) {
           console.log(`${user.name} left the decks but remains in the queue`);
+          
+          // Check if we need to reorder queue based on new deck composition
+          setTimeout(() => {
+            bot.roomInfo(false, function(roomData) {
+              try {
+                const currentDjIds = roomData?.room?.metadata?.djs || [];
+                const users = roomData?.users || [];
+                const currentSong = roomData?.room?.metadata?.current_song;
+                
+                // Get current DJs on decks
+                const djsOnDecks = currentDjIds.map(id => {
+                  const djUser = users.find(u => u.userid === id);
+                  return djUser ? djUser.name : null;
+                }).filter(Boolean);
+                
+                console.log(`[REM_DJ] ${user.name} left decks`);
+                console.log(`[REM_DJ] DJs still on decks: ${djsOnDecks.join(', ')}`);
+                console.log(`[REM_DJ] Current queue before reorder: ${djQueue.print()}`);
+                
+                // If there are still DJs on decks, reorder queue to match new main DJ
+                if (djsOnDecks.length > 0) {
+                  // Preserve song counts and users not on decks
+                  const preservedSongCounts = new Map(djSongCounts);
+                  const queueArray = djQueue.print() ? djQueue.print().split(', ').map(name => name.trim()) : [];
+                  const usersNotOnDecks = queueArray.filter(name => !djsOnDecks.includes(name));
+                  
+                  // Clear and rebuild queue
+                  djQueue.clear();
+                  djSongCounts.clear();
+                  
+                  // Determine new rotation order based on who's now the main DJ
+                  let queueOrder = [];
+                  
+                  if (currentSong && currentSong.djid && currentSong.djname && djsOnDecks.includes(currentSong.djname)) {
+                    // There's still a current song with a valid main DJ
+                    const mainDJ = currentSong.djname;
+                    const mainDJIndex = currentDjIds.indexOf(currentSong.djid);
+                    
+                    if (mainDJIndex !== -1) {
+                      // Start with current main DJ
+                      queueOrder.push(mainDJ);
+                      
+                      // Add remaining DJs in rotation order
+                      for (let i = 1; i < currentDjIds.length; i++) {
+                        const nextIndex = (mainDJIndex + i) % currentDjIds.length;
+                        const nextDJId = currentDjIds[nextIndex];
+                        const nextUser = users.find(u => u.userid === nextDJId);
+                        
+                        if (nextUser && !queueOrder.includes(nextUser.name)) {
+                          queueOrder.push(nextUser.name);
+                        }
+                      }
+                    } else {
+                      queueOrder = djsOnDecks;
+                    }
+                  } else {
+                    // No current song or main DJ changed, use deck order
+                    queueOrder = djsOnDecks;
+                  }
+                  
+                  // Add DJs on decks in rotation order
+                  queueOrder.forEach(djName => {
+                    djQueue.enqueue(djName);
+                    djSongCounts.set(djName, preservedSongCounts.get(djName) || 0);
+                  });
+                  
+                  // Add users not on decks to end
+                  usersNotOnDecks.forEach(djName => {
+                    djQueue.enqueue(djName);
+                    djSongCounts.set(djName, preservedSongCounts.get(djName) || 0);
+                  });
+                  
+                  publishQueueToRedis();
+                  
+                  console.log(`[REM_DJ] Reordered queue after ${user.name} left: ${djQueue.print()}`);
+                  
+                  // Only announce reordering if the queue actually changed and there are still DJs
+                  if (djsOnDecks.length > 0) {
+                    bot.speak(`Queue reordered after ${user.name} left. Current rotation: ${djQueue.print()}`);
+                  }
+                } else {
+                  console.log(`[REM_DJ] No DJs left on decks, queue unchanged`);
+                }
+              } catch (err) {
+                console.error("Error reordering queue after DJ left:", err);
+              }
+            });
+          }, 1000); // Small delay to ensure room state is updated
         }
       } finally {
         console.log("Releasing mutex after rem_dj handler");
@@ -1479,7 +1865,7 @@ bot.on("rem_dj", function (data) {
   }
 });
 
-// Enhanced endsong handler with Fair Turn System
+// FIXED: Enhanced endsong handler with skip detection
 bot.on("endsong", function (data) {
   try {
     // Only enforce queue rules if queue is enabled
@@ -1497,6 +1883,17 @@ bot.on("endsong", function (data) {
         try {
           const currentDJ = data.room.metadata.current_song.djname;
           const currentDJId = data.room.metadata.current_song.djid;
+
+          console.log(`Endsong event for DJ: ${currentDJ}`);
+
+          // NEW: Check if the song was skipped
+          const songWasSkipped = wasSongSkipped(currentDJ);
+          console.log(`Song was ${songWasSkipped ? 'SKIPPED' : 'played naturally'} for ${currentDJ}`);
+          
+          // Clean up song timing data
+          if (songStartTimes.has(currentDJ)) {
+            songStartTimes.delete(currentDJ);
+          }
 
           // Check if this DJ should be removed after their song (Fair Turn System)
           if (djsToRemoveAfterSong.has(currentDJ)) {
@@ -1539,15 +1936,36 @@ bot.on("endsong", function (data) {
                 return;
               }
               
+              // ALWAYS ROTATE DJ TO END OF QUEUE (regardless of skip or natural end)
+              if (djQueue.contains(currentDJ) && djQueue.size() > 1) {
+                djQueue.remove(currentDJ);
+                djQueue.enqueue(currentDJ);
+                console.log(`Moved ${currentDJ} to end of queue for rotation`);
+                
+                // Update queue publication
+                publishQueueToRedis();
+              }
+              
+              // If song was skipped, no penalties - just rotation and announcement
+              if (songWasSkipped) {
+                console.log(`Song was skipped for ${currentDJ}, applying rotation but no penalties`);
+                bot.speak(`${currentDJ} moved to end of queue. Current rotation: ${djQueue.print()}`);
+                return; // Skip penalty logic but rotation already happened
+              }
+              
+              // PENALTY LOGIC - only applies to NATURAL song endings
               // If one song per DJ is enforced (queue size >= 6)
               if (enforceOneSongPerDJ) {
-                // Increment this DJ's song count
+                // Increment this DJ's song count for natural endings
                 const songCount = incrementDJSongCount(currentDJ);
                 
-                // If they've played their one allowed song, mark them as restricted but keep them in queue
+                // If they've played their one allowed song naturally, apply cooldown
                 if (songCount >= 1) {
+                  // Reset song count now that we're applying penalties
+                  resetDJSongCount(currentDJ);
+                  
                   // Tell room what's happening with 1-minute wait time
-                  bot.speak(`@${currentDJ} has played their song (queue has 6+ people). You're still in the queue but must wait 1 minute before playing again.`);
+                  bot.speak(`@${currentDJ} has played their song (queue has 6+ people). Moved to end of queue and must wait 1 minute before playing again.`);
                   
                   // Add them to the recently played list with timestamp and set timeout reminder
                   addToRecentlyPlayed(currentDJ, currentDJId);
@@ -1557,6 +1975,10 @@ bot.on("endsong", function (data) {
                     bot.remDj(currentDJId);
                   }, 2000); // Give them 2 seconds to see the message before removing
                 }
+              } else {
+                // Queue size < 6: Reset count and announce rotation (no penalties)
+                resetDJSongCount(currentDJ);
+                bot.speak(`${currentDJ} moved to end of queue. Current rotation: ${djQueue.print()}`);
               }
               
             } catch (innerErr) {
@@ -1605,4 +2027,4 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 console.log(`Bot starting... Redis integration: ${redisEnabled ? 'ENABLED' : 'DISABLED'}`);
-console.log("Bot error handlers registered");
+console.log("DJ Queue System with Skip Detection - Bot error handlers registered");
